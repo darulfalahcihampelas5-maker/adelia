@@ -42,11 +42,11 @@ export default function LoginScreen({ onLogin }: { onLogin: () => void, key?: st
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
-    // Simulate network request
+    // Fast response so Chrome and Opera retain the active user gesture token
     setTimeout(() => {
       setIsLoading(false);
       onLogin();
-    }, 1200);
+    }, 350);
   };
 
   return (
