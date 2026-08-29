@@ -1,0 +1,32 @@
+{
+  "short_name": "SACIL SMART",
+  "name": "SACIL SMART - Sistem Presensi & Agenda Mengajar",
+  "description": "Sistem Presensi Kelas dan Agenda Mengajar Guru Interaktif",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#ffffff",
+  "theme_color": "#F06C84",
+  "icons": [
+    {
+      "src": "https://lh3.googleusercontent.com/d/1vuPATVrFqA2sMmvnMEj0ooFDyg1q7YTE=s192",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "https://lh3.googleusercontent.com/d/1vuPATVrFqA2sMmvnMEj0ooFDyg1q7YTE=s512",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "https://lh3.googleusercontent.com/d/1vuPATVrFqA2sMmvnMEj0ooFDyg1q7YTE=s512",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

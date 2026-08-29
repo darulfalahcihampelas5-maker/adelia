@@ -1,0 +1,115 @@
+{
+  "collections": [
+    {
+      "name": "kelas",
+      "fields": [
+        { "name": "namaKelas", "type": "string" },
+        { "name": "createdAt", "type": "timestamp" }
+      ],
+      "rules": {
+        "read": "true",
+        "write": "true"
+      }
+    },
+    {
+      "name": "siswa",
+      "fields": [
+        { "name": "namaSiswa", "type": "string" },
+        { "name": "nisn", "type": "string" },
+        { "name": "kelas", "type": "string" },
+        { "name": "createdAt", "type": "timestamp" }
+      ],
+      "rules": {
+        "read": "true",
+        "write": "true"
+      }
+    },
+    {
+      "name": "kalender_pendidikan",
+      "fields": [
+        { "name": "date", "type": "string" },
+        { "name": "activity", "type": "string" },
+        { "name": "type", "type": "string" },
+        { "name": "createdAt", "type": "timestamp" }
+      ],
+      "rules": {
+        "read": "true",
+        "write": "true"
+      }
+    },
+    {
+      "name": "jadwal_mengajar",
+      "fields": [
+        { "name": "day", "type": "string" },
+        { "name": "time", "type": "string" },
+        { "name": "subject", "type": "string" },
+        { "name": "kelas", "type": "string" },
+        { "name": "createdAt", "type": "timestamp" }
+      ],
+      "rules": {
+        "read": "true",
+        "write": "true"
+      }
+    },
+    {
+      "name": "buku_agenda",
+      "fields": [
+        { "name": "tanggal", "type": "string" },
+        { "name": "kelas", "type": "string" },
+        { "name": "materi", "type": "string" },
+        { "name": "tugasType", "type": "string" },
+        { "name": "tugasDetail", "type": "string" },
+        { "name": "isSigned", "type": "boolean" },
+        { "name": "createdAt", "type": "timestamp" }
+      ],
+      "rules": {
+        "read": "true",
+        "write": "true"
+      }
+    },
+    {
+      "name": "modul_ajar",
+      "fields": [
+        { "name": "namaModul", "type": "string" },
+        { "name": "createdAt", "type": "timestamp" }
+      ],
+      "rules": {
+        "read": "true",
+        "write": "true"
+      }
+    },
+    {
+      "name": "program_tahunan",
+      "fields": [
+        { "name": "namaProgram", "type": "string" },
+        { "name": "createdAt", "type": "timestamp" }
+      ],
+      "rules": {
+        "read": "true",
+        "write": "true"
+      }
+    },
+    {
+      "name": "program_semester",
+      "fields": [
+        { "name": "namaProgram", "type": "string" },
+        { "name": "createdAt", "type": "timestamp" }
+      ],
+      "rules": {
+        "read": "true",
+        "write": "true"
+      }
+    },
+    {
+      "name": "daftar_tugas",
+      "fields": [
+        { "name": "judulTugas", "type": "string" },
+        { "name": "createdAt", "type": "string" }
+      ],
+      "rules": {
+        "read": "true",
+        "write": "true"
+      }
+    }
+  ]
+}

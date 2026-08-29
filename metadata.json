@@ -1,0 +1,6 @@
+{
+  "name": "SACIL SMART App",
+  "description": "Aplikasi ini dikembangkan untuk menggantikan pencatatan absensi konvensional menjadi sistem berbasis digital yang lebih efisien dan minim human error. Fokus utama dari SACIL SMART App tidak hanya terletak pada kemudahan rekapitulasi data bagi pihak sekolah, tetapi juga sebagai instrumen pembiasaan positif bagi siswa. Melalui nilai-nilai yang terkandung dalam akronimnya, aplikasi ini diharapkan mampu mendorong siswa untuk lebih mandiri dan responsif terhadap kedisiplinan, sekaligus menjaga integritas data kehadiran demi mendukung ekosistem belajar yang kondusif di SMPN 1 Cililin.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

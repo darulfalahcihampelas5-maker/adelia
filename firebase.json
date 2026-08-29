@@ -1,0 +1,8 @@
+{
+  "firestore": [
+    {
+      "database": "ai-studio-sacilsmart-8dca4cb1-3949-4e48-85c6-775bbf930d27",
+      "rules": "firestore.rules"
+    }
+  ]
+}
