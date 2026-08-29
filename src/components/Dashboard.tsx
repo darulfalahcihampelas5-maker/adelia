@@ -11,6 +11,7 @@ import {
   getUsage, QUOTA_READS, QUOTA_WRITES, clearCache 
 } from '../lib/firebase';
 
+import { DigitalClock } from './DigitalClock';
 import DataSiswaKelas from './DataSiswaKelas';
 import AbsensiSiswa from './AbsensiSiswa';
 import KalenderPendidikan from './KalenderPendidikan';
@@ -83,7 +84,6 @@ export default function Dashboard({ onLogout }: { onLogout: () => void, key?: st
     return () => window.removeEventListener('resize', handleResize);
   }, []);
   const [preselectKelas, setPreselectKelas] = useState<string | null>(null);
-  const [currentTime, setCurrentTime] = useState(new Date());
   const [headerProfilePic, setHeaderProfilePic] = useState<string | null>(null);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
 
@@ -339,15 +339,6 @@ export default function Dashboard({ onLogout }: { onLogout: () => void, key?: st
     }
   }, [activeTab]);
 
-  useEffect(() => {
-    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  const formatTime = (date: Date) => {
-    return date.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).replace(/\./g, ':');
-  };
-
   const navItems = [
     { name: 'Dashboard', icon: Home, active: true },
     { name: 'Data Siswa & Kelas', icon: Users, active: false },
@@ -515,9 +506,7 @@ export default function Dashboard({ onLogout }: { onLogout: () => void, key?: st
 
                     <div className="flex flex-col items-center justify-center mt-8 mb-4">
                       <div className="bg-[#F06C84]/10 backdrop-blur-md border border-[#F06C84]/20 rounded-3xl px-10 py-8 shadow-xl">
-                        <div className="text-5xl lg:text-7xl font-mono font-bold tracking-tight text-[#F06C84] drop-shadow-sm">
-                          {formatTime(currentTime)}
-                        </div>
+                        <DigitalClock />
                       </div>
                     </div>
                   </div>
@@ -623,11 +612,18 @@ export default function Dashboard({ onLogout }: { onLogout: () => void, key?: st
                       </div>
                     </div>
 
-                    <div className="bg-gray-50 rounded-xl p-3 border border-gray-100 flex items-start gap-2.5 mt-2">
-                      <Clock className="w-4 h-4 text-gray-400 mt-0.5 shrink-0" />
-                      <p className="text-[11px] text-gray-500 font-medium leading-relaxed">
-                        Sistem mencatat aktivitas database di aplikasi secara real-time dan secara otomatis akan mereset hitungan penggunaan pada tengah malam (<span className="font-bold">pukul 00:00</span>) setiap harinya. Sisa kuota di atas mengacu pada kapasitas gratis harian dari <span className="font-semibold text-gray-700">Google Cloud Firebase Spark Plan</span>.
-                      </p>
+                    <div className="bg-gray-50 rounded-xl p-3.5 border border-gray-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 mt-2">
+                      <div className="flex items-start gap-2.5">
+                        <Clock className="w-4 h-4 text-[#F06C84] mt-0.5 shrink-0" />
+                        <p className="text-[11px] text-gray-600 font-medium leading-relaxed">
+                          Sistem mencatat aktivitas database di aplikasi secara real-time dan secara otomatis akan mereset hitungan penggunaan ke 0 <span className="font-bold text-[#F06C84]">setiap pukul 14:00 WIB</span> (Siklus 24 Jam). Sisa kuota mengacu pada kapasitas gratis harian dari <span className="font-semibold text-gray-800">Google Cloud Firebase Spark Plan</span>.
+                        </p>
+                      </div>
+                      {usage.cycleStart && (
+                        <span className="px-2.5 py-1 bg-white border border-gray-200 text-gray-600 rounded-lg text-[10px] font-bold shrink-0 self-start sm:self-center">
+                          Siklus: {usage.cycleStart.split(' ')[0]} (14:00) s/d {usage.cycleEnd?.split(' ')[0]} (14:00)
+                        </span>
+                      )}
                     </div>
                   </div>
                 </motion.div>

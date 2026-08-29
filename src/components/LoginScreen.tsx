@@ -42,11 +42,8 @@ export default function LoginScreen({ onLogin }: { onLogin: () => void, key?: st
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
-    // Fast response so Chrome and Opera retain the active user gesture token
-    setTimeout(() => {
-      setIsLoading(false);
-      onLogin();
-    }, 350);
+    // Instant login trigger to guarantee audio autoplay permission in Chrome/Opera/Huawei
+    onLogin();
   };
 
   return (
