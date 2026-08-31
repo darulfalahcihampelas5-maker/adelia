@@ -9,6 +9,7 @@ import firebaseConfig from '../../firebase-applet-config.json';
 
 // Import original firestore operations to wrap them
 import * as firestore from 'firebase/firestore';
+import { getDocFromCache, getDocsFromCache } from 'firebase/firestore';
 
 const app = initializeApp(firebaseConfig);
 
@@ -237,11 +238,38 @@ export const getDoc = async <AppModelType, DbModelType extends firestore.Documen
       memoryCache.set(key, { data: snap, timestamp: now });
     }
     return snap;
-  } catch (error) {
-    console.warn(`Firestore getDoc failed for ${reference.path}:`, error);
+  } catch (error: any) {
+    console.warn(`Firestore getDoc failed for ${reference.path}:`, error.message || error);
+    
+    // First try the in-memory cache if we have it, regardless of TTL
     if (key && memoryCache.has(key)) {
+      console.log('Serving from stale memory cache due to network failure');
       return memoryCache.get(key)!.data;
     }
+    
+    // Then try IndexedDB cache
+    try {
+      const cachedSnap = await getDocFromCache(reference);
+      console.log('Serving from IndexedDB cache due to network failure');
+      return cachedSnap;
+    } catch (cacheError) {
+      console.warn('Failed to retrieve from IndexedDB cache as well:', cacheError);
+    }
+    
+    // If it's a quota error, return a graceful empty snapshot instead of throwing
+    const errorMessage = error?.message || String(error);
+    if (errorMessage.toLowerCase().includes('quota') || errorMessage.toLowerCase().includes('exceeded')) {
+      console.warn('Gracefully handling quota exceeded for getDoc by returning empty snapshot.');
+      return {
+        id: reference.id,
+        ref: reference,
+        exists: () => false,
+        data: () => undefined,
+        get: (fieldPath: any) => undefined,
+        metadata: { hasPendingWrites: false, fromCache: true, isEqual: () => false }
+      } as any;
+    }
+    
     throw error;
   }
 };
@@ -266,11 +294,39 @@ export const getDocs = async <AppModelType, DbModelType extends firestore.Docume
       memoryCache.set(key, { data: res, timestamp: now });
     }
     return res;
-  } catch (error) {
-    console.warn(`Firestore getDocs failed:`, error);
+  } catch (error: any) {
+    console.warn(`Firestore getDocs failed:`, error.message || error);
+    
+    // First try the in-memory cache if we have it, regardless of TTL
     if (key && memoryCache.has(key)) {
+      console.log('Serving from stale memory cache due to network failure');
       return memoryCache.get(key)!.data;
     }
+    
+    // Then try IndexedDB cache
+    try {
+      const cachedRes = await getDocsFromCache(query);
+      console.log('Serving from IndexedDB cache due to network failure');
+      return cachedRes;
+    } catch (cacheError) {
+      console.warn('Failed to retrieve from IndexedDB cache as well:', cacheError);
+    }
+    
+    // If it's a quota error, return a graceful empty snapshot instead of throwing
+    const errorMessage = error?.message || String(error);
+    if (errorMessage.toLowerCase().includes('quota') || errorMessage.toLowerCase().includes('exceeded')) {
+      console.warn('Gracefully handling quota exceeded for getDocs by returning empty snapshot.');
+      return {
+        docs: [],
+        size: 0,
+        empty: true,
+        query: query,
+        forEach: (callback: any) => {},
+        docChanges: () => [],
+        metadata: { hasPendingWrites: false, fromCache: true, isEqual: () => false }
+      } as any;
+    }
+    
     throw error;
   }
 };

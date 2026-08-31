@@ -157,8 +157,12 @@ export default function AbsensiSiswa({ initialKelas }: { initialKelas?: string }
       querySnapshotSiswa.forEach((doc) => {
         sList.push({ id: doc.id, ...doc.data() } as Siswa);
       });
-      // Sort students alphabetically
-      sList.sort((a, b) => a.namaSiswa.localeCompare(b.namaSiswa, undefined, { numeric: true, sensitivity: 'base' }));
+      // Sort students alphabetically safely
+      sList.sort((a, b) => {
+        const nameA = a.namaSiswa || "";
+        const nameB = b.namaSiswa || "";
+        return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
+      });
       setSiswaList(sList);
 
       // 2. Fetch ALL attendance records of this class to:
@@ -220,9 +224,11 @@ export default function AbsensiSiswa({ initialKelas }: { initialKelas?: string }
       setAbsensiDates(sortedDates);
       setJumlahHariEfektif(sortedDates.length);
 
-      const sortedStats = Object.values(statsMap).sort((a, b) => 
-        a.namaSiswa.localeCompare(b.namaSiswa, undefined, { numeric: true, sensitivity: 'base' })
-      );
+      const sortedStats = Object.values(statsMap).sort((a, b) => {
+        const nameA = a.namaSiswa || "";
+        const nameB = b.namaSiswa || "";
+        return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
+      });
       setPreviewStats(sortedStats);
 
       setAttendance(targetAttendance);
@@ -233,9 +239,9 @@ export default function AbsensiSiswa({ initialKelas }: { initialKelas?: string }
       } else {
         setSavedInfo(null);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error loading class data:", error);
-      showNotification("Gagal memuat data kelas", "error");
+      showNotification(`Gagal memuat data kelas: ${error.message || 'Kesalahan sistem'}`, "error");
     } finally {
       setFetchingSiswa(false);
       setFetchingAttendance(false);
@@ -287,12 +293,16 @@ export default function AbsensiSiswa({ initialKelas }: { initialKelas?: string }
           list.push({ id: doc.id, ...doc.data() } as Kelas);
         });
         // Sort by name
-        list.sort((a, b) => a.namaKelas.localeCompare(b.namaKelas, undefined, { numeric: true, sensitivity: 'base' }));
+        list.sort((a, b) => {
+          const namaA = a.namaKelas || "";
+          const namaB = b.namaKelas || "";
+          return namaA.localeCompare(namaB, undefined, { numeric: true, sensitivity: 'base' });
+        });
         setKelasList(list);
         await fetchMeetingsCountPerClass();
-      } catch (error) {
+      } catch (error: any) {
         console.error("Error fetching kelas:", error);
-        showNotification("Gagal mengambil data kelas", "error");
+        showNotification(`Gagal mengambil data kelas: ${error.message || 'Kesalahan sistem'}`, "error");
         try {
           handleFirestoreError(error, OperationType.LIST, 'kelas');
         } catch (e) {

@@ -57,7 +57,11 @@ export default function DataSiswaKelas() {
     try {
       const kelasQuery = query(collection(db, 'kelas'), orderBy('createdAt', 'asc'));
       const kelasSnapshot = await getDocs(kelasQuery);
-      setKelasList(kelasSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Kelas)).sort((a, b) => a.namaKelas.localeCompare(b.namaKelas, undefined, { numeric: true, sensitivity: 'base' })));
+      setKelasList(kelasSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Kelas)).sort((a, b) => {
+        const namaA = a.namaKelas || "";
+        const namaB = b.namaKelas || "";
+        return namaA.localeCompare(namaB, undefined, { numeric: true, sensitivity: 'base' });
+      }));
 
       const siswaQuery = query(collection(db, 'siswa'), orderBy('createdAt', 'asc'));
       const siswaSnapshot = await getDocs(siswaQuery);
