@@ -260,6 +260,9 @@ export const getDoc = async <AppModelType, DbModelType extends firestore.Documen
     const errorMessage = error?.message || String(error);
     if (errorMessage.toLowerCase().includes('quota') || errorMessage.toLowerCase().includes('exceeded')) {
       console.warn('Gracefully handling quota exceeded for getDoc by returning empty snapshot.');
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('firebase-quota-exceeded'));
+      }
       return {
         id: reference.id,
         ref: reference,
@@ -316,6 +319,9 @@ export const getDocs = async <AppModelType, DbModelType extends firestore.Docume
     const errorMessage = error?.message || String(error);
     if (errorMessage.toLowerCase().includes('quota') || errorMessage.toLowerCase().includes('exceeded')) {
       console.warn('Gracefully handling quota exceeded for getDocs by returning empty snapshot.');
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('firebase-quota-exceeded'));
+      }
       return {
         docs: [],
         size: 0,
