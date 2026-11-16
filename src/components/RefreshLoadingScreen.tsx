@@ -162,25 +162,30 @@ export default function RefreshLoadingScreen() {
           className="w-24 h-3 bg-[#F06C84]/30 rounded-full blur-[2px] -mt-2 mb-5"
         />
 
-        {/* Text: Memuat Halaman */}
-        <div className="flex flex-col items-center gap-2 text-center">
-          <div className="flex items-center gap-1.5">
-            <span className="text-xl sm:text-2xl font-black tracking-tight text-[#d84863]">
-              Memuat Halaman
-            </span>
-            <span className="flex gap-1 pt-1">
-              {[0, 0.18, 0.36].map((delay, i) => (
-                <motion.span
-                  key={i}
-                  animate={{ y: [0, -4, 0], opacity: [0.4, 1, 0.4] }}
-                  transition={{ duration: 0.7, repeat: Infinity, delay }}
-                  className="w-1.5 h-1.5 rounded-full bg-[#F06C84] inline-block"
-                />
-              ))}
+        {/* Text: Memuat Halaman (Modern & Profesional) */}
+        <div className="flex flex-col items-center gap-3 text-center max-w-xs w-full">
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] font-bold uppercase tracking-[0.25em] text-[#F06C84]">
+              SACIL SMART
             </span>
           </div>
-          <p className="text-xs font-bold uppercase tracking-widest text-[#F06C84]/75">
-            SACIL SMART App
+
+          <h2 className="text-2xl sm:text-[26px] font-extrabold tracking-tight bg-gradient-to-r from-slate-800 via-[#d84863] to-[#F06C84] bg-clip-text text-transparent">
+            Memuat Halaman
+          </h2>
+
+          {/* Smooth 1s Progress Bar */}
+          <div className="w-44 h-1.5 bg-rose-100 rounded-full overflow-hidden shadow-inner">
+            <motion.div
+              initial={{ width: '0%' }}
+              animate={{ width: '100%' }}
+              transition={{ duration: 0.95, ease: 'easeInOut' }}
+              className="h-full rounded-full bg-gradient-to-r from-[#F06C84] to-[#d84863]"
+            />
+          </div>
+
+          <p className="text-xs font-medium text-slate-500 tracking-wide">
+            Menyiapkan data dan tampilan terbaru...
           </p>
         </div>
       </div>

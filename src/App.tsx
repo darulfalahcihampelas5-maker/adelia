@@ -8,18 +8,32 @@ import { registerSW } from './lib/notifications';
 import { initVoiceAssistant, speakWelcome, speakGoodbye } from './lib/audioVoice';
 
 export default function App() {
-  const [isRefreshing, setIsRefreshing] = useState(true);
   const [screen, setScreen] = useState<'splash' | 'login' | 'dashboard'>(() => {
-    // If we were already in dashboard, stay there
-    return localStorage.getItem('appState') === 'dashboard' ? 'dashboard' : 'splash';
+    if (localStorage.getItem('appState') === 'dashboard') return 'dashboard';
+    if (localStorage.getItem('sacil_splash_shown') === 'true') return 'login';
+    return 'splash';
+  });
+
+  const [isRefreshing, setIsRefreshing] = useState<boolean>(() => {
+    // Pertama kali dibuka (langsung masuk splash) jangan tampilkan RefreshLoadingScreen
+    const isDashboard = localStorage.getItem('appState') === 'dashboard';
+    const splashAlreadyShown = localStorage.getItem('sacil_splash_shown') === 'true';
+    return isDashboard || splashAlreadyShown;
   });
 
   useEffect(() => {
+    if (screen === 'splash') {
+      localStorage.setItem('sacil_splash_shown', 'true');
+    }
+  }, [screen]);
+
+  useEffect(() => {
+    if (!isRefreshing) return;
     const refreshTimer = setTimeout(() => {
       setIsRefreshing(false);
     }, 1000);
     return () => clearTimeout(refreshTimer);
-  }, []);
+  }, [isRefreshing]);
 
   useEffect(() => {
     // Register service worker to make the application PWA installable in the browser
@@ -29,15 +43,17 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!isRefreshing && screen === 'splash') {
+    if (screen === 'splash') {
       const timer = setTimeout(() => {
+        localStorage.setItem('sacil_splash_shown', 'true');
         setScreen('login');
       }, 5000);
       return () => clearTimeout(timer);
     }
-  }, [isRefreshing, screen]);
+  }, [screen]);
 
   const handleLogin = () => {
+    localStorage.setItem('sacil_splash_shown', 'true');
     localStorage.setItem('appState', 'dashboard');
     setScreen('dashboard');
     speakWelcome(true);
