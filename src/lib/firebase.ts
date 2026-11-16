@@ -139,7 +139,7 @@ interface CacheEntry {
 const memoryCache = new Map<string, CacheEntry>();
 const CACHE_TTL = 10 * 60 * 1000; // 10 minutes TTL for snappy performance and maximum quota conservation
 let quotaCooldownUntil = 0;
-const QUOTA_COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown before retrying network after quota exceeded
+const QUOTA_COOLDOWN_MS = 15 * 1000; // 15 seconds cooldown before retrying network after quota error
 
 export function isQuotaError(error: any): boolean {
   if (!error) return false;
@@ -148,7 +148,6 @@ export function isQuotaError(error: any): boolean {
   return (
     code === 'resource-exhausted' ||
     message.includes('quota') ||
-    message.includes('exceeded') ||
     message.includes('resource-exhausted') ||
     message.includes('resource_exhausted')
   );
@@ -162,7 +161,8 @@ export function getUpgradeDatabaseUrl(): string {
 
 function notifyQuotaExceeded() {
   quotaCooldownUntil = Date.now() + QUOTA_COOLDOWN_MS;
-  if (typeof window !== 'undefined') {
+  const usage = getUsage();
+  if (typeof window !== 'undefined' && (usage.reads >= QUOTA_READS || usage.writes >= QUOTA_WRITES)) {
     window.dispatchEvent(new CustomEvent('firebase-quota-exceeded'));
   }
 }
