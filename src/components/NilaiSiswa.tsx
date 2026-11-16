@@ -96,6 +96,7 @@ export default function NilaiSiswa() {
   const [notification, setNotification] = useState<{message: string, type: 'success' | 'error'} | null>(null);
 
   const [isEditingTask, setIsEditingTask] = useState(false);
+  const [editingTaskOriginalTitle, setEditingTaskOriginalTitle] = useState('');
   const [editedTaskTitle, setEditedTaskTitle] = useState('');
   const [editedTaskKategori, setEditedTaskKategori] = useState<'Tugas' | 'Ulangan' | 'PTS' | 'ASAS'>('Tugas');
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
@@ -191,9 +192,14 @@ export default function NilaiSiswa() {
       setTimeout(() => setNotification(null), 3000);
       return;
     }
-    const oldTitle = judulTugas;
-    if (newTitle === oldTitle && newKategori === getTaskCategory(oldTitle)) {
+    const oldTitle = editingTaskOriginalTitle || judulTugas;
+    if (!oldTitle) {
       setIsEditingTask(false);
+      return;
+    }
+    if (newTitle === oldTitle && newKategori === normalizeKategori(getTaskCategory(oldTitle))) {
+      setIsEditingTask(false);
+      setEditingTaskOriginalTitle('');
       return;
     }
     if (newTitle !== oldTitle && tugasList.includes(newTitle)) {
@@ -260,9 +266,12 @@ export default function NilaiSiswa() {
         });
       }
 
-      setJudulTugas(newTitle);
+      if (judulTugas === oldTitle) {
+        setJudulTugas(newTitle);
+      }
       setIsEditingTask(false);
-      setNotification({ message: "Tugas berhasil diperbarui.", type: 'success' });
+      setEditingTaskOriginalTitle('');
+      setNotification({ message: "Tugas & keterangan berhasil diperbarui di Firebase!", type: 'success' });
       setTimeout(() => setNotification(null), 3000);
     } catch (error) {
       console.warn("Error editing task title:", error);
@@ -1078,6 +1087,7 @@ export default function NilaiSiswa() {
                                         <button 
                                             type="button"
                                             onClick={() => {
+                                                setEditingTaskOriginalTitle(judulTugas);
                                                 setEditedTaskTitle(judulTugas);
                                                 setEditedTaskKategori(normalizeKategori(getTaskCategory(judulTugas)));
                                                 setIsEditingTask(true);
@@ -1363,10 +1373,26 @@ export default function NilaiSiswa() {
                                      return (
                                          <th key={tugas} className="px-4 py-3 text-center font-bold border border-gray-300" style={{ minWidth: '150px' }}>
                                              <div>{tugas}</div>
-                                             <div className="mt-0.5 flex flex-col items-center gap-0.5">
-                                                 <span className={`px-2 py-0.5 rounded text-[9px] font-bold border normal-case ${KATEGORI_BADGE_COLORS[kat]}`}>
-                                                     {kat}
-                                                 </span>
+                                             <div className="mt-1 flex flex-col items-center gap-1">
+                                                 <div className="inline-flex items-center gap-1">
+                                                     <span className={`px-2 py-0.5 rounded text-[9px] font-bold border normal-case ${KATEGORI_BADGE_COLORS[kat]}`}>
+                                                         {kat}
+                                                     </span>
+                                                     <button
+                                                         type="button"
+                                                         onClick={() => {
+                                                             setEditingTaskOriginalTitle(tugas);
+                                                             setEditedTaskTitle(tugas);
+                                                             setEditedTaskKategori(kat);
+                                                             setIsEditingTask(true);
+                                                         }}
+                                                         className="p-1 rounded-md bg-blue-50 text-blue-600 hover:bg-blue-100 hover:text-blue-700 border border-blue-200/70 transition-colors cursor-pointer"
+                                                         title={`Edit Keterangan & Nama "${tugas}"`}
+                                                         aria-label={`Edit keterangan ${tugas}`}
+                                                     >
+                                                         <Edit2 className="w-3 h-3" />
+                                                     </button>
+                                                 </div>
                                                  <span className="text-[10px] text-gray-500 font-medium normal-case">
                                                      {allTasksDates[tugas] ? new Date(allTasksDates[tugas]).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }) : '-'}
                                                  </span>

@@ -20,7 +20,8 @@ try {
   dbInstance = initializeFirestore(app, {
     localCache: persistentLocalCache({
       tabManager: persistentMultipleTabManager()
-    })
+    }),
+    experimentalAutoDetectLongPolling: true,
   }, (firebaseConfig as any).firestoreDatabaseId);
 } catch (e) {
   console.warn("Falling back to standard getFirestore:", e);
@@ -150,6 +151,17 @@ export function isQuotaError(error: any): boolean {
     message.includes('quota') ||
     message.includes('resource-exhausted') ||
     message.includes('resource_exhausted')
+  );
+}
+
+function isUnavailableError(error: any): boolean {
+  if (!error) return false;
+  const code = String(error?.code || '').toLowerCase();
+  const message = String(error?.message || error || '').toLowerCase();
+  return (
+    code === 'unavailable' ||
+    message.includes('client is offline') ||
+    message.includes('could not reach cloud firestore backend')
   );
 }
 
@@ -301,10 +313,21 @@ export const getDoc = async <AppModelType, DbModelType extends firestore.Documen
       // IndexedDB cache miss
     }
     
-    // If it's a quota error, return a graceful empty snapshot instead of throwing
+    // If it's a quota error or transient offline/unavailable error, return a graceful empty snapshot
     if (isQuotaError(error)) {
       console.warn('Gracefully handling quota exceeded for getDoc by returning empty snapshot.');
       notifyQuotaExceeded();
+      return {
+        id: reference.id,
+        ref: reference,
+        exists: () => false,
+        data: () => undefined,
+        get: () => undefined,
+        metadata: { hasPendingWrites: false, fromCache: true, isEqual: () => false }
+      } as any;
+    }
+
+    if (isUnavailableError(error)) {
       return {
         id: reference.id,
         ref: reference,
@@ -374,10 +397,22 @@ export const getDocs = async <AppModelType, DbModelType extends firestore.Docume
       // IndexedDB cache miss
     }
     
-    // If it's a quota error, return a graceful empty snapshot instead of throwing
+    // If it's a quota error or transient offline/unavailable error, return a graceful empty snapshot
     if (isQuotaError(error)) {
       console.warn('Gracefully handling quota exceeded for getDocs by returning empty snapshot.');
       notifyQuotaExceeded();
+      return {
+        docs: [],
+        size: 0,
+        empty: true,
+        query: query,
+        forEach: () => {},
+        docChanges: () => [],
+        metadata: { hasPendingWrites: false, fromCache: true, isEqual: () => false }
+      } as any;
+    }
+
+    if (isUnavailableError(error)) {
       return {
         docs: [],
         size: 0,

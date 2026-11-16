@@ -481,6 +481,7 @@ export default function Dashboard({ onLogout }: { onLogout: () => void, key?: st
               type="button"
               onClick={() => {
                 clearCache();
+                sessionStorage.setItem('sacil_manual_refresh', 'true');
                 window.location.reload();
               }}
               className="w-10 h-10 rounded-full bg-rose-50 hover:bg-rose-100 flex items-center justify-center border border-[#F06C84]/30 text-[#F06C84] shrink-0 cursor-pointer hover:scale-105 transition-all focus:outline-none focus:ring-2 focus:ring-[#F06C84]/40 shadow-2xs"

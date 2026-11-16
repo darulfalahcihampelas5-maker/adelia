@@ -8,24 +8,37 @@ import { registerSW } from './lib/notifications';
 import { initVoiceAssistant, speakWelcome, speakGoodbye } from './lib/audioVoice';
 
 export default function App() {
-  const [screen, setScreen] = useState<'splash' | 'login' | 'dashboard'>(() => {
-    if (localStorage.getItem('appState') === 'dashboard') return 'dashboard';
-    if (localStorage.getItem('sacil_splash_shown') === 'true') return 'login';
-    return 'splash';
-  });
+  const [initialFlags] = useState(() => {
+    const isManualRefresh = sessionStorage.getItem('sacil_manual_refresh') === 'true';
+    sessionStorage.removeItem('sacil_manual_refresh');
 
-  const [isRefreshing, setIsRefreshing] = useState<boolean>(() => {
-    // Pertama kali dibuka (langsung masuk splash) jangan tampilkan RefreshLoadingScreen
-    const isDashboard = localStorage.getItem('appState') === 'dashboard';
-    const splashAlreadyShown = localStorage.getItem('sacil_splash_shown') === 'true';
-    return isDashboard || splashAlreadyShown;
-  });
+    const navEntry =
+      typeof performance !== 'undefined'
+        ? (performance.getEntriesByType?.('navigation')?.[0] as PerformanceNavigationTiming | undefined)
+        : undefined;
+    const isBrowserReload = navEntry?.type === 'reload';
+    const isSessionStarted = sessionStorage.getItem('sacil_session_started') === 'true';
+    const isLoggedIn = localStorage.getItem('appState') === 'dashboard';
 
-  useEffect(() => {
-    if (screen === 'splash') {
-      localStorage.setItem('sacil_splash_shown', 'true');
+    // Show "Memuat Halaman" ONLY when user actually refreshes (manual refresh button or browser reload after session started)
+    const shouldShowRefreshLoading = isManualRefresh || (isSessionStarted && isBrowserReload);
+
+    let startScreen: 'splash' | 'login' | 'dashboard';
+    if (isLoggedIn) {
+      startScreen = 'dashboard';
+    } else if (shouldShowRefreshLoading || isSessionStarted) {
+      // On refresh from Login (or already past splash in this session), never show splash again
+      startScreen = 'login';
+    } else {
+      startScreen = 'splash';
     }
-  }, [screen]);
+
+    sessionStorage.setItem('sacil_session_started', 'true');
+    return { shouldShowRefreshLoading, startScreen };
+  });
+
+  const [screen, setScreen] = useState<'splash' | 'login' | 'dashboard'>(initialFlags.startScreen);
+  const [isRefreshing, setIsRefreshing] = useState<boolean>(initialFlags.shouldShowRefreshLoading);
 
   useEffect(() => {
     if (!isRefreshing) return;
@@ -45,7 +58,6 @@ export default function App() {
   useEffect(() => {
     if (screen === 'splash') {
       const timer = setTimeout(() => {
-        localStorage.setItem('sacil_splash_shown', 'true');
         setScreen('login');
       }, 5000);
       return () => clearTimeout(timer);
@@ -53,7 +65,6 @@ export default function App() {
   }, [screen]);
 
   const handleLogin = () => {
-    localStorage.setItem('sacil_splash_shown', 'true');
     localStorage.setItem('appState', 'dashboard');
     setScreen('dashboard');
     speakWelcome(true);
