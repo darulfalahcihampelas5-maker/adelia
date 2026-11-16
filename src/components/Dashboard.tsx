@@ -472,11 +472,23 @@ export default function Dashboard({ onLogout }: { onLogout: () => void, key?: st
             </div>
           )}
 
-          <div className="flex items-center gap-4 text-right">
+          <div className="flex items-center gap-3 sm:gap-4 text-right">
             <div className="hidden sm:block">
               <p className="text-sm font-bold text-gray-900">Dashboard</p>
               <p className="text-xs text-gray-500">Selamat datang, <span className="text-[#F06C84] font-semibold">Adeliasari Kusuma Wardani, S.Pd.</span></p>
             </div>
+            <button
+              type="button"
+              onClick={() => {
+                clearCache();
+                window.location.reload();
+              }}
+              className="w-10 h-10 rounded-full bg-rose-50 hover:bg-rose-100 flex items-center justify-center border border-[#F06C84]/30 text-[#F06C84] shrink-0 cursor-pointer hover:scale-105 transition-all focus:outline-none focus:ring-2 focus:ring-[#F06C84]/40 shadow-2xs"
+              title="Refresh Halaman"
+              aria-label="Refresh Halaman"
+            >
+              <RefreshCw className="w-4 h-4" />
+            </button>
             <button 
               onClick={() => setActiveTab('Pengguna')}
               className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center border-2 border-[#F06C84] text-[#F06C84] shrink-0 overflow-hidden cursor-pointer hover:scale-105 transition-transform focus:outline-none focus:ring-2 focus:ring-[#F06C84]/40"

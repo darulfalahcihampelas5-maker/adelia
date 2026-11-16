@@ -130,6 +130,8 @@
       "name": "bobot_nilai",
       "fields": [
         { "name": "kehadiran", "type": "number" },
+        { "name": "tugas", "type": "number" },
+        { "name": "ulangan", "type": "number" },
         { "name": "tugasHarian", "type": "number" },
         { "name": "ulanganHarian", "type": "number" },
         { "name": "pts", "type": "number" },

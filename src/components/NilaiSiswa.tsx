@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { collection, getDocs, query, orderBy, doc, getDoc, setDoc, deleteDoc, where, db, isQuotaError } from '../lib/firebase';
-import { Save, FileSpreadsheet, Table, FileText, Edit2, CheckCircle, XCircle, Trash2, X, ChevronDown, Check, Sliders, RotateCcw, Award } from 'lucide-react';
+import { Save, FileSpreadsheet, Table, FileText, Edit2, CheckCircle, XCircle, Trash2, X, ChevronDown, Check, Sliders, Award } from 'lucide-react';
 import ConfirmationDialog from './ConfirmationDialog';
 import * as XLSX from 'xlsx';
 import { generatePDF } from '../lib/pdfUtils';
@@ -13,44 +13,55 @@ interface Siswa {
   kelas: string;
 }
 
-type KategoriPenilaian = 'Tugas Harian' | 'Ulangan Harian' | 'PTS' | 'ASAS';
+type KategoriPenilaian = 'Tugas' | 'Ulangan' | 'Tugas Harian' | 'Ulangan Harian' | 'PTS' | 'ASAS';
 
 interface BobotNilai {
-  kehadiran: number;
-  tugasHarian: number;
-  ulanganHarian: number;
-  pts: number;
-  asas: number;
+  kehadiran: number | '';
+  tugas: number | '';
+  ulangan: number | '';
+  pts: number | '';
+  asas: number | '';
 }
 
-const DEFAULT_BOBOT: BobotNilai = {
-  kehadiran: 10,
-  tugasHarian: 25,
-  ulanganHarian: 20,
-  pts: 20,
-  asas: 25,
+const EMPTY_BOBOT: BobotNilai = {
+  kehadiran: '',
+  tugas: '',
+  ulangan: '',
+  pts: '',
+  asas: '',
 };
 
-const KATEGORI_OPTIONS: KategoriPenilaian[] = [
-  'Tugas Harian',
-  'Ulangan Harian',
-  'PTS',
-  'ASAS',
+const KATEGORI_OPTIONS: { value: 'Tugas' | 'Ulangan' | 'PTS' | 'ASAS'; label: string }[] = [
+  { value: 'Tugas', label: 'Tugas' },
+  { value: 'Ulangan', label: 'Ulangan' },
+  { value: 'PTS', label: 'PTS' },
+  { value: 'ASAS', label: 'ASAS' },
 ];
 
-const KATEGORI_BADGE_COLORS: Record<KategoriPenilaian, string> = {
+const KATEGORI_BADGE_COLORS: Record<string, string> = {
+  'Tugas': 'bg-blue-50 text-blue-700 border-blue-200',
   'Tugas Harian': 'bg-blue-50 text-blue-700 border-blue-200',
+  'Ulangan': 'bg-purple-50 text-purple-700 border-purple-200',
   'Ulangan Harian': 'bg-purple-50 text-purple-700 border-purple-200',
   'PTS': 'bg-amber-50 text-amber-700 border-amber-200',
   'ASAS': 'bg-emerald-50 text-emerald-700 border-emerald-200',
 };
 
-function inferKategoriFromTitle(title: string): KategoriPenilaian {
+function normalizeKategori(k: string | undefined): 'Tugas' | 'Ulangan' | 'PTS' | 'ASAS' {
+  if (!k) return 'Tugas';
+  const lower = k.toLowerCase();
+  if (lower.includes('pts') || lower.includes('tengah')) return 'PTS';
+  if (lower.includes('asas') || lower.includes('akhir')) return 'ASAS';
+  if (lower.includes('ulangan') || lower.includes('uh') || lower.includes('kuis') || lower.includes('sumatif')) return 'Ulangan';
+  return 'Tugas';
+}
+
+function inferKategoriFromTitle(title: string): 'Tugas' | 'Ulangan' | 'PTS' | 'ASAS' {
   const lower = (title || '').toLowerCase();
   if (/\b(pts|uts)\b|tengah\s*semester/.test(lower)) return 'PTS';
   if (/\b(asas|pas|uas)\b|akhir\s*semester/.test(lower)) return 'ASAS';
-  if (/\b(uh)\b|ulangan|sumatif|kuis/.test(lower)) return 'Ulangan Harian';
-  return 'Tugas Harian';
+  if (/\b(uh)\b|ulangan|sumatif|kuis/.test(lower)) return 'Ulangan';
+  return 'Tugas';
 }
 
 export default function NilaiSiswa() {
@@ -59,23 +70,15 @@ export default function NilaiSiswa() {
   const [kelas, setKelas] = useState('');
   const [judulTugas, setJudulTugas] = useState('');
   const [tempNewTaskTitle, setTempNewTaskTitle] = useState('');
-  const [tempNewTaskKategori, setTempNewTaskKategori] = useState<KategoriPenilaian>('Tugas Harian');
+  const [tempNewTaskKategori, setTempNewTaskKategori] = useState<'Tugas' | 'Ulangan' | 'PTS' | 'ASAS'>('Tugas');
   const [tugasList, setTugasList] = useState<string[]>([]);
-  const [taskCategories, setTaskCategories] = useState<Record<string, KategoriPenilaian>>({});
+  const [taskCategories, setTaskCategories] = useState<Record<string, string>>({});
   const [kelasList, setKelasList] = useState<{ id: string; namaKelas: string }[]>([]);
   const [siswaList, setSiswaList] = useState<Siswa[]>([]);
 
-  // Bobot Nilai State
-  const [bobotNilai, setBobotNilai] = useState<BobotNilai>(() => {
-    try {
-      const saved = localStorage.getItem('sacil_bobot_nilai');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        return { ...DEFAULT_BOBOT, ...parsed };
-      }
-    } catch {}
-    return DEFAULT_BOBOT;
-  });
+  // Bobot Nilai State: empty by default, stored in Firebase
+  const [bobotNilai, setBobotNilai] = useState<BobotNilai>(EMPTY_BOBOT);
+  const [isBobotEditing, setIsBobotEditing] = useState<boolean>(true);
   const [isSavingBobot, setIsSavingBobot] = useState(false);
 
   // Attendance percentage per student for selected class
@@ -94,7 +97,7 @@ export default function NilaiSiswa() {
 
   const [isEditingTask, setIsEditingTask] = useState(false);
   const [editedTaskTitle, setEditedTaskTitle] = useState('');
-  const [editedTaskKategori, setEditedTaskKategori] = useState<KategoriPenilaian>('Tugas Harian');
+  const [editedTaskKategori, setEditedTaskKategori] = useState<'Tugas' | 'Ulangan' | 'PTS' | 'ASAS'>('Tugas');
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
 
   const [isEditingPreview, setIsEditingPreview] = useState(false);
@@ -102,12 +105,12 @@ export default function NilaiSiswa() {
 
   const totalBobot =
     (Number(bobotNilai.kehadiran) || 0) +
-    (Number(bobotNilai.tugasHarian) || 0) +
-    (Number(bobotNilai.ulanganHarian) || 0) +
+    (Number(bobotNilai.tugas) || 0) +
+    (Number(bobotNilai.ulangan) || 0) +
     (Number(bobotNilai.pts) || 0) +
     (Number(bobotNilai.asas) || 0);
 
-  const getTaskCategory = (taskTitle: string): KategoriPenilaian => {
+  const getTaskCategory = (taskTitle: string): string => {
     return taskCategories[taskTitle] || inferKategoriFromTitle(taskTitle);
   };
 
@@ -122,20 +125,27 @@ export default function NilaiSiswa() {
     }
     setIsSavingBobot(true);
     try {
-      localStorage.setItem('sacil_bobot_nilai', JSON.stringify(bobotNilai));
-      await setDoc(doc(db, 'bobot_nilai', 'main'), {
-        ...bobotNilai,
+      const payload = {
+        kehadiran: Number(bobotNilai.kehadiran) || 0,
+        tugas: Number(bobotNilai.tugas) || 0,
+        tugasHarian: Number(bobotNilai.tugas) || 0,
+        ulangan: Number(bobotNilai.ulangan) || 0,
+        ulanganHarian: Number(bobotNilai.ulangan) || 0,
+        pts: Number(bobotNilai.pts) || 0,
+        asas: Number(bobotNilai.asas) || 0,
         updatedAt: new Date().toISOString()
-      });
-      setNotification({ message: "Bobot Nilai berhasil disimpan!", type: 'success' });
+      };
+      await setDoc(doc(db, 'bobot_nilai', 'main'), payload);
+      setIsBobotEditing(false); // Disables inputs after saving
+      setNotification({ message: "Bobot Nilai berhasil disimpan ke database Firebase!", type: 'success' });
       setTimeout(() => setNotification(null), 3000);
     } catch (error) {
-      console.warn("Error saving bobot nilai:", error);
+      console.warn("Error saving bobot nilai to Firebase:", error);
       setNotification({
         message: isQuotaError(error)
-          ? "Bobot tersimpan di perangkat ini (kuota database harian tercapai)."
-          : "Gagal menyimpan bobot nilai ke cloud.",
-        type: isQuotaError(error) ? 'success' : 'error'
+          ? "Kuota database harian tercapai. Silakan coba beberapa saat lagi."
+          : "Gagal menyimpan bobot nilai ke database Firebase.",
+        type: 'error'
       });
       setTimeout(() => setNotification(null), 3000);
     } finally {
@@ -143,11 +153,11 @@ export default function NilaiSiswa() {
     }
   };
 
-  const handleResetBobot = () => {
-    setBobotNilai(DEFAULT_BOBOT);
+  const handleEditBobot = () => {
+    setIsBobotEditing(true);
   };
 
-  const handleChangeSelectedTaskKategori = async (newKategori: KategoriPenilaian) => {
+  const handleChangeSelectedTaskKategori = async (newKategori: 'Tugas' | 'Ulangan' | 'PTS' | 'ASAS') => {
     if (!judulTugas) return;
     setTaskCategories(prev => ({ ...prev, [judulTugas]: newKategori }));
     try {
@@ -166,14 +176,16 @@ export default function NilaiSiswa() {
           nilai: allTasksData[judulTugas]
         }, { merge: true });
       }
-      setNotification({ message: `Kategori "${judulTugas}" diubah ke ${newKategori}.`, type: 'success' });
+      setNotification({ message: `Kategori "${judulTugas}" diubah ke ${newKategori} di database!`, type: 'success' });
       setTimeout(() => setNotification(null), 2500);
     } catch (error) {
       console.warn("Failed updating task category:", error);
+      setNotification({ message: "Gagal menyimpan perubahan kategori ke database.", type: 'error' });
+      setTimeout(() => setNotification(null), 3000);
     }
   };
 
-  const handleEditTask = async (newTitle: string, newKategori: KategoriPenilaian) => {
+  const handleEditTask = async (newTitle: string, newKategori: 'Tugas' | 'Ulangan' | 'PTS' | 'ASAS') => {
     if (!newTitle.trim()) {
       setNotification({ message: "Nama tugas tidak boleh kosong.", type: 'error' });
       setTimeout(() => setNotification(null), 3000);
@@ -311,14 +323,14 @@ export default function NilaiSiswa() {
             const allTasks = new Set<string>(); // Global tasks
             const tasksDataForKelas: Record<string, Record<string, string>> = {};
             const tasksDatesForKelas: Record<string, string> = {};
-            const categoriesMap: Record<string, KategoriPenilaian> = {};
+            const categoriesMap: Record<string, string> = {};
 
             snapshot.docs.forEach(docSnap => {
                 const data = docSnap.data();
                 if (data.judulTugas) {
                     allTasks.add(data.judulTugas);
-                    if (data.kategori && KATEGORI_OPTIONS.includes(data.kategori)) {
-                        categoriesMap[data.judulTugas] = data.kategori;
+                    if (data.kategori) {
+                        categoriesMap[data.judulTugas] = normalizeKategori(data.kategori);
                     }
                 }
 
@@ -335,8 +347,8 @@ export default function NilaiSiswa() {
                 const data = docSnap.data();
                 if (data.judulTugas) {
                     allTasks.add(data.judulTugas);
-                    if (data.kategori && KATEGORI_OPTIONS.includes(data.kategori)) {
-                        categoriesMap[data.judulTugas] = data.kategori;
+                    if (data.kategori) {
+                        categoriesMap[data.judulTugas] = normalizeKategori(data.kategori);
                     }
                 }
             });
@@ -419,21 +431,27 @@ export default function NilaiSiswa() {
       sList.sort((a, b) => (a.namaSiswa || '').localeCompare(b.namaSiswa || '', undefined, { numeric: true, sensitivity: 'base' }));
       setSiswaList(sList);
 
-      // Load saved Bobot Nilai from Firestore
+      // Load saved Bobot Nilai directly from Firestore
       const bobotSnap = await getDoc(doc(db, 'bobot_nilai', 'main'));
       if (bobotSnap.exists()) {
-        const bData = bobotSnap.data() as Partial<BobotNilai>;
-        const merged: BobotNilai = {
-          kehadiran: typeof bData.kehadiran === 'number' ? bData.kehadiran : DEFAULT_BOBOT.kehadiran,
-          tugasHarian: typeof bData.tugasHarian === 'number' ? bData.tugasHarian : DEFAULT_BOBOT.tugasHarian,
-          ulanganHarian: typeof bData.ulanganHarian === 'number' ? bData.ulanganHarian : DEFAULT_BOBOT.ulanganHarian,
-          pts: typeof bData.pts === 'number' ? bData.pts : DEFAULT_BOBOT.pts,
-          asas: typeof bData.asas === 'number' ? bData.asas : DEFAULT_BOBOT.asas,
+        const bData = bobotSnap.data() as any;
+        const loaded: BobotNilai = {
+          kehadiran: typeof bData.kehadiran === 'number' ? bData.kehadiran : '',
+          tugas: typeof bData.tugas === 'number' ? bData.tugas : (typeof bData.tugasHarian === 'number' ? bData.tugasHarian : ''),
+          ulangan: typeof bData.ulangan === 'number' ? bData.ulangan : (typeof bData.ulanganHarian === 'number' ? bData.ulanganHarian : ''),
+          pts: typeof bData.pts === 'number' ? bData.pts : '',
+          asas: typeof bData.asas === 'number' ? bData.asas : '',
         };
-        setBobotNilai(merged);
-        try {
-          localStorage.setItem('sacil_bobot_nilai', JSON.stringify(merged));
-        } catch {}
+        setBobotNilai(loaded);
+        const sumLoaded = (Number(loaded.kehadiran) || 0) + (Number(loaded.tugas) || 0) + (Number(loaded.ulangan) || 0) + (Number(loaded.pts) || 0) + (Number(loaded.asas) || 0);
+        if (sumLoaded === 100) {
+          setIsBobotEditing(false); // Saved in DB -> disabled by default
+        } else {
+          setIsBobotEditing(true); // Empty or incomplete -> enabled
+        }
+      } else {
+        setBobotNilai(EMPTY_BOBOT);
+        setIsBobotEditing(true);
       }
     } catch (error) {
       if (!isQuotaError(error)) {
@@ -454,7 +472,7 @@ export default function NilaiSiswa() {
             setTimeout(() => setNotification(null), 3000);
             return;
         }
-        const kategori = getTaskCategory(judulTugas);
+        const kategori = normalizeKategori(getTaskCategory(judulTugas));
         const nilaiDocRef = doc(db, 'nilai', `${judulTugas}_${kelas}`);
         await setDoc(nilaiDocRef, {
             judulTugas,
@@ -521,9 +539,9 @@ export default function NilaiSiswa() {
     const kehadiranPct = attendancePctMap[studentId];
     const kehadiranScore = kehadiranPct !== null && kehadiranPct !== undefined ? kehadiranPct : 0;
 
-    const categoryScores: Record<KategoriPenilaian, number[]> = {
-      'Tugas Harian': [],
-      'Ulangan Harian': [],
+    const categoryScores: Record<'Tugas' | 'Ulangan' | 'PTS' | 'ASAS', number[]> = {
+      'Tugas': [],
+      'Ulangan': [],
       'PTS': [],
       'ASAS': [],
     };
@@ -533,7 +551,7 @@ export default function NilaiSiswa() {
       if (rawVal !== undefined && rawVal !== null && String(rawVal).trim() !== '' && String(rawVal).trim() !== '-') {
         const num = Number(rawVal);
         if (!isNaN(num)) {
-          const kat = getTaskCategory(taskName);
+          const kat = normalizeKategori(getTaskCategory(taskName));
           categoryScores[kat].push(num);
         }
       }
@@ -541,15 +559,15 @@ export default function NilaiSiswa() {
 
     const avg = (arr: number[]) => arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
 
-    const avgTH = avg(categoryScores['Tugas Harian']);
-    const avgUH = avg(categoryScores['Ulangan Harian']);
+    const avgTugas = avg(categoryScores['Tugas']);
+    const avgUlangan = avg(categoryScores['Ulangan']);
     const avgPTS = avg(categoryScores['PTS']);
     const avgASAS = avg(categoryScores['ASAS']);
 
     const wTotal =
       (Number(bobotNilai.kehadiran) || 0) +
-      (Number(bobotNilai.tugasHarian) || 0) +
-      (Number(bobotNilai.ulanganHarian) || 0) +
+      (Number(bobotNilai.tugas) || 0) +
+      (Number(bobotNilai.ulangan) || 0) +
       (Number(bobotNilai.pts) || 0) +
       (Number(bobotNilai.asas) || 0);
 
@@ -557,8 +575,8 @@ export default function NilaiSiswa() {
 
     const weighted =
       kehadiranScore * (Number(bobotNilai.kehadiran) || 0) +
-      avgTH * (Number(bobotNilai.tugasHarian) || 0) +
-      avgUH * (Number(bobotNilai.ulanganHarian) || 0) +
+      avgTugas * (Number(bobotNilai.tugas) || 0) +
+      avgUlangan * (Number(bobotNilai.ulangan) || 0) +
       avgPTS * (Number(bobotNilai.pts) || 0) +
       avgASAS * (Number(bobotNilai.asas) || 0);
 
@@ -579,7 +597,7 @@ export default function NilaiSiswa() {
                 judulTugas: tugas,
                 kelas,
                 date: existingDate,
-                kategori: getTaskCategory(tugas),
+                kategori: normalizeKategori(getTaskCategory(tugas)),
                 nilai: currentNilai
             });
 
@@ -590,11 +608,11 @@ export default function NilaiSiswa() {
         }
 
         setIsEditingPreview(false);
-        setNotification({message: "Perubahan nilai berhasil disimpan!", type: 'success'});
+        setNotification({message: "Perubahan nilai berhasil disimpan ke Firebase!", type: 'success'});
         setTimeout(() => setNotification(null), 3000);
     } catch (error) {
         console.warn("Error saving preview changes:", error);
-        setNotification({message: "Gagal menyimpan perubahan nilai.", type: 'error'});
+        setNotification({message: "Gagal menyimpan perubahan nilai ke database.", type: 'error'});
         setTimeout(() => setNotification(null), 3000);
     }
   };
@@ -609,18 +627,18 @@ export default function NilaiSiswa() {
             'Nama Siswa': s.namaSiswa,
             'NIS': s.nisn,
             'Kelas': kelas,
-            [`Kehadiran (${bobotNilai.kehadiran}%)`]: pct !== null && pct !== undefined ? `${pct.toFixed(1)}%` : '-',
+            [`Nilai Kehadiran (${Number(bobotNilai.kehadiran) || 0}%)`]: pct !== null && pct !== undefined ? Math.round(pct) : '-',
         };
         exportTasks.forEach(tugas => {
             const dateStr = allTasksDates[tugas] ? ` (${new Date(allTasksDates[tugas]).toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: '2-digit' })})` : '';
-            row[`${tugas} [${getTaskCategory(tugas)}]${dateStr}`] = allTasksData[tugas]?.[s.id] || '-';
+            row[`${tugas} [${normalizeKategori(getTaskCategory(tugas))}]${dateStr}`] = allTasksData[tugas]?.[s.id] || '-';
         });
-        row['Nilai Rapor'] = computeNilaiRapor(s.id).toFixed(1);
+        row['Nilai Rapor'] = Math.round(computeNilaiRapor(s.id));
         return row;
     });
     const ws = XLSX.utils.json_to_sheet(data);
 
-    const colWidths = [{ wch: 5 }, { wch: 30 }, { wch: 15 }, { wch: 10 }, { wch: 16 }, ...exportTasks.map(() => ({ wch: 14 })), { wch: 14 }];
+    const colWidths = [{ wch: 5 }, { wch: 30 }, { wch: 15 }, { wch: 10 }, { wch: 18 }, ...exportTasks.map(() => ({ wch: 14 })), { wch: 14 }];
     ws['!cols'] = colWidths;
 
     const wb = XLSX.utils.book_new();
@@ -631,12 +649,12 @@ export default function NilaiSiswa() {
   const handleExportPDF = async () => {
     const exportTasks = getPreviewTasks();
 
-    const headerRow1 = ['No', 'Nama Siswa', 'NIS', 'Kelas', 'Kehadiran', ...exportTasks.map(tugas => tugas), 'Nilai Rapor'];
+    const headerRow1 = ['No', 'Nama Siswa', 'NIS', 'Kelas', 'Nilai Kehadiran', ...exportTasks.map(tugas => tugas), 'Nilai Rapor'];
     const headerRow2 = [
-      '', '', '', '', `(${bobotNilai.kehadiran}%)`,
+      '', '', '', '', `(Bobot ${Number(bobotNilai.kehadiran) || 0}%)`,
       ...exportTasks.map(tugas => {
         const dateText = allTasksDates[tugas] ? new Date(allTasksDates[tugas]).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
-        return `${getTaskCategory(tugas)}${dateText ? ` (${dateText})` : ''}`;
+        return `${normalizeKategori(getTaskCategory(tugas))}${dateText ? ` (${dateText})` : ''}`;
       }),
       `(Bobot ${totalBobot}%)`
     ];
@@ -650,9 +668,9 @@ export default function NilaiSiswa() {
           s.namaSiswa,
           s.nisn,
           kelas,
-          pct !== null && pct !== undefined ? `${pct.toFixed(1)}%` : '-',
+          pct !== null && pct !== undefined ? String(Math.round(pct)) : '-',
           ...exportTasks.map(tugas => allTasksData[tugas]?.[s.id] || '-'),
-          computeNilaiRapor(s.id).toFixed(1)
+          String(Math.round(computeNilaiRapor(s.id)))
         ];
     });
     
@@ -765,7 +783,7 @@ export default function NilaiSiswa() {
                             </div>
                         </div>
                         <div className="flex items-center gap-2 flex-wrap">
-                            <span className={`px-3 py-1 rounded-lg text-xs font-bold border ${
+                            <span className={`px-3 py-1.5 rounded-xl text-xs font-bold border ${
                                 totalBobot === 100 
                                     ? 'bg-emerald-50 text-emerald-700 border-emerald-200' 
                                     : 'bg-amber-50 text-amber-700 border-amber-200'
@@ -774,19 +792,27 @@ export default function NilaiSiswa() {
                             </span>
                             <button
                                 type="button"
-                                onClick={handleResetBobot}
-                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-white border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors cursor-pointer"
-                                title="Kembalikan ke bobot default"
+                                onClick={handleEditBobot}
+                                disabled={isBobotEditing}
+                                className={`flex items-center gap-1.5 px-4 py-1.5 rounded-xl text-xs font-bold border transition-all ${
+                                    !isBobotEditing
+                                        ? 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100 cursor-pointer shadow-xs'
+                                        : 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed'
+                                }`}
                             >
-                                <RotateCcw className="w-3.5 h-3.5" /> Default
+                                <Edit2 className="w-3.5 h-3.5" /> Edit
                             </button>
                             <button
                                 type="button"
                                 onClick={handleSaveBobot}
-                                disabled={isSavingBobot}
-                                className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl text-xs font-bold bg-[#F06C84] hover:bg-[#d85e75] text-white shadow-sm transition-all cursor-pointer disabled:opacity-60"
+                                disabled={!isBobotEditing || isSavingBobot}
+                                className={`flex items-center gap-1.5 px-4 py-1.5 rounded-xl text-xs font-bold shadow-sm transition-all ${
+                                    isBobotEditing && !isSavingBobot
+                                        ? 'bg-[#F06C84] hover:bg-[#d85e75] text-white cursor-pointer'
+                                        : 'bg-gray-100 text-gray-400 cursor-not-allowed shadow-none'
+                                }`}
                             >
-                                <Save className="w-3.5 h-3.5" /> {isSavingBobot ? 'Menyimpan...' : 'Simpan Bobot'}
+                                <Save className="w-3.5 h-3.5" /> {isSavingBobot ? 'Menyimpan...' : 'Simpan'}
                             </button>
                         </div>
                     </div>
@@ -794,12 +820,12 @@ export default function NilaiSiswa() {
                     <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
                         {[
                             { key: 'kehadiran' as keyof BobotNilai, label: 'Kehadiran' },
-                            { key: 'tugasHarian' as keyof BobotNilai, label: 'Tugas Harian' },
-                            { key: 'ulanganHarian' as keyof BobotNilai, label: 'Ulangan Harian' },
+                            { key: 'tugas' as keyof BobotNilai, label: 'Tugas' },
+                            { key: 'ulangan' as keyof BobotNilai, label: 'Ulangan' },
                             { key: 'pts' as keyof BobotNilai, label: 'PTS' },
                             { key: 'asas' as keyof BobotNilai, label: 'ASAS' },
                         ].map((item) => (
-                            <div key={item.key} className="bg-white p-3 rounded-xl border border-gray-150 shadow-2xs">
+                            <div key={item.key} className="bg-white p-3 rounded-xl border border-gray-200 shadow-2xs">
                                 <label className="block text-[11px] font-bold text-gray-600 uppercase tracking-wider mb-1.5">
                                     {item.label}
                                 </label>
@@ -808,12 +834,19 @@ export default function NilaiSiswa() {
                                         type="number"
                                         min="0"
                                         max="100"
+                                        disabled={!isBobotEditing}
+                                        placeholder="0"
                                         value={bobotNilai[item.key]}
                                         onChange={(e) => {
-                                            const val = Math.max(0, Math.min(100, Number(e.target.value) || 0));
-                                            setBobotNilai(prev => ({ ...prev, [item.key]: val }));
+                                            const raw = e.target.value;
+                                            if (raw === '') {
+                                                setBobotNilai(prev => ({ ...prev, [item.key]: '' }));
+                                            } else {
+                                                const val = Math.max(0, Math.min(100, Number(raw) || 0));
+                                                setBobotNilai(prev => ({ ...prev, [item.key]: val }));
+                                            }
                                         }}
-                                        className="w-full pl-3 pr-8 py-2 rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#F06C84]/20 focus:border-[#F06C84] bg-gray-50/50 text-sm font-bold text-gray-900"
+                                        className="w-full pl-3 pr-8 py-2 rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#F06C84]/20 focus:border-[#F06C84] bg-gray-50/50 text-sm font-bold text-gray-900 disabled:bg-gray-100 disabled:text-gray-500 disabled:cursor-not-allowed"
                                     />
                                     <span className="absolute right-3 text-xs font-bold text-gray-400 pointer-events-none">%</span>
                                 </div>
@@ -911,11 +944,11 @@ export default function NilaiSiswa() {
                                 />
                                 <select
                                     value={tempNewTaskKategori}
-                                    onChange={(e) => setTempNewTaskKategori(e.target.value as KategoriPenilaian)}
+                                    onChange={(e) => setTempNewTaskKategori(e.target.value as 'Tugas' | 'Ulangan' | 'PTS' | 'ASAS')}
                                     className="h-[46px] px-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#F06C84]/20 focus:border-[#F06C84] bg-gray-50/50 text-xs font-bold text-gray-700 shrink-0 sm:w-36"
                                 >
                                     {KATEGORI_OPTIONS.map(kat => (
-                                        <option key={kat} value={kat}>{kat}</option>
+                                        <option key={kat.value} value={kat.value}>{kat.label}</option>
                                     ))}
                                 </select>
                                 <button
@@ -997,7 +1030,7 @@ export default function NilaiSiswa() {
                                                     </button>
                                                     {tugasList.map((t) => {
                                                         const isSelected = judulTugas === t;
-                                                        const kat = getTaskCategory(t);
+                                                        const kat = normalizeKategori(getTaskCategory(t));
                                                         return (
                                                             <button
                                                                 key={t}
@@ -1033,20 +1066,20 @@ export default function NilaiSiswa() {
                                 {judulTugas && (
                                     <div className="flex items-center gap-2 shrink-0">
                                         <select
-                                            value={getTaskCategory(judulTugas)}
-                                            onChange={(e) => handleChangeSelectedTaskKategori(e.target.value as KategoriPenilaian)}
+                                            value={normalizeKategori(getTaskCategory(judulTugas))}
+                                            onChange={(e) => handleChangeSelectedTaskKategori(e.target.value as 'Tugas' | 'Ulangan' | 'PTS' | 'ASAS')}
                                             className="h-[46px] px-3 rounded-xl border border-gray-200 bg-gray-50/50 text-xs font-bold text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#F06C84]/20 focus:border-[#F06C84] flex-1 sm:flex-none sm:w-36"
                                             title="Kategori Penilaian Tugas"
                                         >
                                             {KATEGORI_OPTIONS.map(kat => (
-                                                <option key={kat} value={kat}>{kat}</option>
+                                                <option key={kat.value} value={kat.value}>{kat.label}</option>
                                             ))}
                                         </select>
                                         <button 
                                             type="button"
                                             onClick={() => {
                                                 setEditedTaskTitle(judulTugas);
-                                                setEditedTaskKategori(getTaskCategory(judulTugas));
+                                                setEditedTaskKategori(normalizeKategori(getTaskCategory(judulTugas)));
                                                 setIsEditingTask(true);
                                             }}
                                             className="h-[46px] w-[46px] flex items-center justify-center bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-xl transition-all shrink-0 cursor-pointer"
@@ -1298,53 +1331,53 @@ export default function NilaiSiswa() {
                  </div>
                  {/* Active Bobot Info Bar */}
                  {kelas && (
-                     <div className="mb-4 px-4 py-3 rounded-xl bg-slate-50 border border-gray-100 flex flex-wrap items-center justify-between gap-2 text-xs">
+                     <div className="mb-4 px-4 py-3 rounded-xl bg-slate-50 border border-gray-200 flex flex-wrap items-center justify-between gap-2 text-xs">
                          <div className="flex items-center gap-2 font-semibold text-gray-700">
                              <Award className="w-4 h-4 text-[#F06C84] shrink-0" />
                              <span>Bobot Nilai Rapor:</span>
-                             <span className="text-gray-600">
-                                 Kehadiran <strong>{bobotNilai.kehadiran}%</strong> • Tugas Harian <strong>{bobotNilai.tugasHarian}%</strong> • Ulangan Harian <strong>{bobotNilai.ulanganHarian}%</strong> • PTS <strong>{bobotNilai.pts}%</strong> • ASAS <strong>{bobotNilai.asas}%</strong>
+                             <span className="text-gray-700">
+                                 Kehadiran <strong>{Number(bobotNilai.kehadiran) || 0}%</strong> • Tugas <strong>{Number(bobotNilai.tugas) || 0}%</strong> • Ulangan <strong>{Number(bobotNilai.ulangan) || 0}%</strong> • PTS <strong>{Number(bobotNilai.pts) || 0}%</strong> • ASAS <strong>{Number(bobotNilai.asas) || 0}%</strong>
                              </span>
                          </div>
-                         <span className="px-2.5 py-0.5 rounded-full bg-white border border-gray-200 text-gray-600 font-bold text-[11px]">
+                         <span className="px-2.5 py-0.5 rounded-full bg-white border border-gray-200 text-gray-700 font-bold text-[11px]">
                              Hari Efektif Presensi: {jumlahHariEfektif} Pertemuan
                          </span>
                      </div>
                  )}
 
-                 <div className="overflow-auto border border-gray-100 rounded-xl bg-white">
-                     <table className="w-full text-left text-sm text-gray-500 border-collapse">
-                         <thead className="text-xs text-gray-700 uppercase bg-gray-50">
+                 <div className="overflow-auto border border-gray-300 rounded-xl bg-white shadow-xs">
+                     <table className="w-full text-left text-sm text-gray-800 border-collapse">
+                         <thead className="text-xs text-gray-900 uppercase bg-gray-100">
                              <tr>
-                                 <th className="px-4 py-3 text-center" style={{ minWidth: '70px' }}>No</th>
-                                 <th className="px-4 py-3" style={{ minWidth: '180px' }}>Nama Lengkap</th>
-                                 <th className="px-4 py-3" style={{ minWidth: '120px' }}>NIS</th>
-                                 <th className="px-4 py-3 text-center bg-blue-50/50 text-blue-900" style={{ minWidth: '130px' }}>
+                                 <th className="px-4 py-3 text-center font-bold border border-gray-300" style={{ minWidth: '70px' }}>No</th>
+                                 <th className="px-4 py-3 font-bold border border-gray-300" style={{ minWidth: '180px' }}>Nama Lengkap</th>
+                                 <th className="px-4 py-3 font-bold border border-gray-300" style={{ minWidth: '120px' }}>NIS</th>
+                                 <th className="px-4 py-3 text-center font-bold bg-blue-50/80 text-blue-950 border border-gray-300" style={{ minWidth: '130px' }}>
                                      <div>Nilai Kehadiran</div>
-                                     <div className="text-[10px] text-blue-600 font-semibold normal-case mt-0.5">
-                                         Presensi ({bobotNilai.kehadiran}%)
+                                     <div className="text-[10px] text-blue-700 font-semibold normal-case mt-0.5">
+                                         Bobot {Number(bobotNilai.kehadiran) || 0}%
                                      </div>
                                  </th>
                                  {getPreviewTasks().map(tugas => {
-                                     const kat = getTaskCategory(tugas);
+                                     const kat = normalizeKategori(getTaskCategory(tugas));
                                      return (
-                                         <th key={tugas} className="px-4 py-3 text-center" style={{ minWidth: '150px' }}>
+                                         <th key={tugas} className="px-4 py-3 text-center font-bold border border-gray-300" style={{ minWidth: '150px' }}>
                                              <div>{tugas}</div>
                                              <div className="mt-0.5 flex flex-col items-center gap-0.5">
                                                  <span className={`px-2 py-0.5 rounded text-[9px] font-bold border normal-case ${KATEGORI_BADGE_COLORS[kat]}`}>
                                                      {kat}
                                                  </span>
-                                                 <span className="text-[10px] text-gray-400 font-normal normal-case">
+                                                 <span className="text-[10px] text-gray-500 font-medium normal-case">
                                                      {allTasksDates[tugas] ? new Date(allTasksDates[tugas]).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }) : '-'}
                                                  </span>
                                              </div>
                                          </th>
                                      );
                                  })}
-                                 <th className="px-4 py-3 text-center bg-rose-50/70 text-[#F06C84]" style={{ minWidth: '130px' }}>
+                                 <th className="px-4 py-3 text-center font-bold bg-rose-50 text-[#d84863] border border-gray-300" style={{ minWidth: '130px' }}>
                                      <div>Nilai Rapor</div>
-                                     <div className="text-[10px] text-[#F06C84]/80 font-semibold normal-case mt-0.5">
-                                         Bobot ({totalBobot}%)
+                                     <div className="text-[10px] text-[#d84863] font-semibold normal-case mt-0.5">
+                                         Bobot {totalBobot}%
                                      </div>
                                  </th>
                              </tr>
@@ -1352,33 +1385,33 @@ export default function NilaiSiswa() {
                          <tbody>
                              {!kelas ? (
                                  <tr>
-                                     <td colSpan={5 + getPreviewTasks().length} className="px-4 py-12 text-center text-gray-400 font-medium bg-white">
+                                     <td colSpan={5 + getPreviewTasks().length} className="px-4 py-12 text-center text-gray-500 font-medium bg-white border border-gray-300">
                                          Silakan pilih kelas terlebih dahulu untuk melihat daftar nilai.
                                      </td>
                                  </tr>
                              ) : filteredSiswa.length === 0 ? (
                                  <tr>
-                                     <td colSpan={5 + getPreviewTasks().length} className="px-4 py-12 text-center text-gray-400 font-medium bg-white">
+                                     <td colSpan={5 + getPreviewTasks().length} className="px-4 py-12 text-center text-gray-500 font-medium bg-white border border-gray-300">
                                          Tidak ada data siswa untuk kelas ini.
                                      </td>
                                  </tr>
                              ) : (
                                  filteredSiswa.map((s, idx) => {
                                      const pct = attendancePctMap[s.id];
-                                     const raporScore = computeNilaiRapor(s.id, isEditingPreview ? previewNilaiEditState : allTasksData);
+                                     const raporScore = Math.round(computeNilaiRapor(s.id, isEditingPreview ? previewNilaiEditState : allTasksData));
                                      return (
-                                         <tr key={s.id} className="bg-white border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
-                                             <td className="px-4 py-3 font-mono text-center">{idx + 1}</td>
-                                             <td className="px-4 py-3 font-medium text-gray-900">{s.namaSiswa}</td>
-                                             <td className="px-4 py-3">{s.nisn}</td>
-                                             <td className="px-4 py-3 text-center font-bold text-blue-700 bg-blue-50/20">
-                                                 {pct !== null && pct !== undefined ? `${pct.toFixed(1)}%` : '-'}
+                                         <tr key={s.id} className="bg-white hover:bg-gray-50/70 transition-colors">
+                                             <td className="px-4 py-3 font-mono font-semibold text-gray-800 text-center border border-gray-300">{idx + 1}</td>
+                                             <td className="px-4 py-3 font-semibold text-gray-900 border border-gray-300">{s.namaSiswa}</td>
+                                             <td className="px-4 py-3 font-medium text-gray-800 border border-gray-300">{s.nisn}</td>
+                                             <td className="px-4 py-3 text-center font-extrabold text-sm text-blue-900 bg-blue-50/25 border border-gray-300">
+                                                 {pct !== null && pct !== undefined ? Math.round(pct) : '-'}
                                              </td>
                                              {getPreviewTasks().map(tugas => {
                                                  if (isEditingPreview) {
                                                      const currentVal = previewNilaiEditState[tugas]?.[s.id] || '';
                                                      return (
-                                                         <td key={tugas} className="px-4 py-2 text-center">
+                                                         <td key={tugas} className="px-4 py-2 text-center border border-gray-300">
                                                              <input 
                                                                  type="number"
                                                                  min="0"
@@ -1394,18 +1427,18 @@ export default function NilaiSiswa() {
                                                                          }
                                                                      }));
                                                                  }}
-                                                                 className="w-20 px-2 py-1.5 text-center border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#F06C84]/20 focus:border-[#F06C84] bg-white text-sm font-semibold text-gray-800"
+                                                                 className="w-20 px-2 py-1.5 text-center border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#F06C84]/20 focus:border-[#F06C84] bg-white text-sm font-bold text-gray-900"
                                                                  placeholder="-"
                                                              />
                                                          </td>
                                                      );
                                                  }
                                                  return (
-                                                     <td key={tugas} className="px-4 py-3 text-center break-words">{allTasksData[tugas]?.[s.id] || '-'}</td>
+                                                     <td key={tugas} className="px-4 py-3 text-center font-bold text-sm text-gray-900 break-words border border-gray-300">{allTasksData[tugas]?.[s.id] || '-'}</td>
                                                  );
                                              })}
-                                             <td className="px-4 py-3 text-center font-black text-[#F06C84] bg-rose-50/30">
-                                                 {raporScore.toFixed(1)}
+                                             <td className="px-4 py-3 text-center font-black text-base text-[#d84863] bg-rose-50/40 border border-gray-300">
+                                                 {raporScore}
                                              </td>
                                          </tr>
                                      );
@@ -1460,11 +1493,11 @@ export default function NilaiSiswa() {
                     <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Kategori Penilaian</label>
                     <select
                       value={editedTaskKategori}
-                      onChange={(e) => setEditedTaskKategori(e.target.value as KategoriPenilaian)}
+                      onChange={(e) => setEditedTaskKategori(e.target.value as 'Tugas' | 'Ulangan' | 'PTS' | 'ASAS')}
                       className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#F06C84]/20 focus:border-[#F06C84] transition-all bg-gray-50/50 text-sm font-medium"
                     >
                       {KATEGORI_OPTIONS.map(kat => (
-                        <option key={kat} value={kat}>{kat}</option>
+                        <option key={kat.value} value={kat.value}>{kat.label}</option>
                       ))}
                     </select>
                   </div>
