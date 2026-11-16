@@ -136,11 +136,55 @@ interface CacheEntry {
   timestamp: number;
 }
 
-// Fast in-memory map without blocking synchronous localStorage writes
+// Fast in-memory map + lightweight persistent timestamps in localStorage
 const memoryCache = new Map<string, CacheEntry>();
-const CACHE_TTL = 10 * 60 * 1000; // 10 minutes TTL for snappy performance and maximum quota conservation
+const CACHE_TTL = 15 * 60 * 1000; // 15 minutes TTL for snappy performance and maximum quota conservation
+const CACHE_TS_STORAGE_KEY = 'sacil_firestore_cache_ts';
 let quotaCooldownUntil = 0;
 const QUOTA_COOLDOWN_MS = 15 * 1000; // 15 seconds cooldown before retrying network after quota error
+
+interface PersistedTsEntry {
+  ts: number;
+  hasDocs?: boolean;
+}
+
+function loadPersistedCacheTs(): Record<string, PersistedTsEntry> {
+  try {
+    const raw = localStorage.getItem(CACHE_TS_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function savePersistedCacheTs(map: Record<string, PersistedTsEntry>) {
+  try {
+    localStorage.setItem(CACHE_TS_STORAGE_KEY, JSON.stringify(map));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+function getPersistedCacheEntry(key: string): PersistedTsEntry | null {
+  if (!key) return null;
+  const map = loadPersistedCacheTs();
+  return map[key] || null;
+}
+
+function setPersistedCacheEntry(key: string, ts: number, hasDocs?: boolean) {
+  if (!key) return;
+  const map = loadPersistedCacheTs();
+  map[key] = { ts, hasDocs };
+  savePersistedCacheTs(map);
+}
+
+function clearPersistedCacheTs() {
+  try {
+    localStorage.removeItem(CACHE_TS_STORAGE_KEY);
+  } catch {
+    // Ignore
+  }
+}
 
 export function isQuotaError(error: any): boolean {
   if (!error) return false;
@@ -181,6 +225,7 @@ function notifyQuotaExceeded() {
 
 export function clearCache() {
   memoryCache.clear();
+  clearPersistedCacheTs();
   quotaCooldownUntil = 0;
 }
 
@@ -198,29 +243,61 @@ function getQueryCollectionPath(q: any): string {
   return '';
 }
 
+function extractFilterValue(val: any): string {
+  if (val === null) return 'null';
+  if (val === undefined) return '';
+  if (typeof val !== 'object') return String(val);
+  if ('stringValue' in val) return String(val.stringValue);
+  if ('integerValue' in val) return String(val.integerValue);
+  if ('doubleValue' in val) return String(val.doubleValue);
+  if ('booleanValue' in val) return String(val.booleanValue);
+  if ('nullValue' in val) return 'null';
+  if ('referenceValue' in val) return String(val.referenceValue);
+  if ('timestampValue' in val) return JSON.stringify(val.timestampValue);
+  if ('arrayValue' in val && Array.isArray(val.arrayValue?.values)) {
+    return `[${val.arrayValue.values.map(extractFilterValue).join('|')}]`;
+  }
+  if ('internalValue' in val) return extractFilterValue(val.internalValue);
+  try {
+    return JSON.stringify(val);
+  } catch {
+    return String(val);
+  }
+}
+
+function extractFilterKey(f: any): string {
+  if (!f) return '';
+  if (Array.isArray(f.filters)) {
+    return `(${f.op || 'AND'}:${f.filters.map(extractFilterKey).join(',')})`;
+  }
+  const field =
+    f.field?.segments?.join('.') ||
+    f.field?.canonicalString?.() ||
+    f.field?.toString?.() ||
+    '';
+  const op = f.op || '';
+  const val = extractFilterValue(f.value);
+  return `${field}_${op}_${val}`;
+}
+
 function generateCacheKey(q: any): string {
   if (!q) return '';
   const colPath = getQueryCollectionPath(q);
-  
+
   if (typeof q.path === 'string' && q.path.split('/').length % 2 === 0) {
     return `doc:${q.path}`;
   }
-  
+
   let key = `query:${colPath}`;
   if (q._query) {
     try {
       if (q._query.filters && q._query.filters.length > 0) {
-        const filters = q._query.filters.map((f: any) => {
-          const field = f.field?.segments?.join('.') || f.field?.toString() || '';
-          const op = f.op || '';
-          const val = f.value !== undefined ? String(f.value) : '';
-          return `${field}_${op}_${val}`;
-        }).join(',');
+        const filters = q._query.filters.map(extractFilterKey).join(',');
         key += `:f:[${filters}]`;
       }
       if (q._query.explicitOrderBy && q._query.explicitOrderBy.length > 0) {
         const orders = q._query.explicitOrderBy.map((o: any) => {
-          const field = o.field?.segments?.join('.') || o.field?.toString() || '';
+          const field = o.field?.segments?.join('.') || o.field?.canonicalString?.() || o.field?.toString?.() || '';
           const dir = o.dir || 'asc';
           return `${field}_${dir}`;
         }).join(',');
@@ -236,25 +313,41 @@ function generateCacheKey(q: any): string {
   return key;
 }
 
+function matchesCollectionKey(key: string, collectionName: string): boolean {
+  return (
+    key.startsWith(`query:${collectionName}`) ||
+    key.startsWith(`doc:${collectionName}`) ||
+    key.includes(`/${collectionName}`) ||
+    key.includes(`:${collectionName}`)
+  );
+}
+
 function invalidateCacheForPath(ref: any) {
   const path = getQueryCollectionPath(ref);
   if (!path) {
     clearCache();
     return;
   }
-  
+
   const segments = path.split('/');
   const collectionName = segments[0];
-  
-  for (const key of memoryCache.keys()) {
-    if (
-      key.startsWith(`query:${collectionName}`) || 
-      key.startsWith(`doc:${collectionName}`) ||
-      key.includes(`/${collectionName}`) ||
-      key.includes(`:${collectionName}`)
-    ) {
+
+  for (const key of Array.from(memoryCache.keys())) {
+    if (matchesCollectionKey(key, collectionName)) {
       memoryCache.delete(key);
     }
+  }
+
+  const tsMap = loadPersistedCacheTs();
+  let modified = false;
+  for (const key of Object.keys(tsMap)) {
+    if (matchesCollectionKey(key, collectionName)) {
+      delete tsMap[key];
+      modified = true;
+    }
+  }
+  if (modified) {
+    savePersistedCacheTs(tsMap);
   }
 }
 
@@ -269,6 +362,22 @@ export const getDoc = async <AppModelType, DbModelType extends firestore.Documen
     const entry = memoryCache.get(key)!;
     if (now - entry.timestamp < CACHE_TTL || now < quotaCooldownUntil) {
       return entry.data;
+    }
+  }
+
+  // Check persistent IndexedDB cache first if fresh timestamp exists (survives page refresh with 0 reads)
+  const persisted = getPersistedCacheEntry(key);
+  if (persisted && (now - persisted.ts < CACHE_TTL || now < quotaCooldownUntil)) {
+    try {
+      const cachedSnap = await getDocFromCache(reference);
+      if (cachedSnap.exists() || persisted.hasDocs === false) {
+        if (key) {
+          memoryCache.set(key, { data: cachedSnap, timestamp: persisted.ts });
+        }
+        return cachedSnap;
+      }
+    } catch {
+      // Cache miss in IndexedDB, proceed to server
     }
   }
 
@@ -295,25 +404,23 @@ export const getDoc = async <AppModelType, DbModelType extends firestore.Documen
     }
     if (key) {
       memoryCache.set(key, { data: snap, timestamp: now });
+      setPersistedCacheEntry(key, now, snap.exists());
     }
     return snap;
   } catch (error: any) {
     console.warn(`Firestore getDoc failed for ${reference.path}:`, error?.message || error);
-    
-    // First try the in-memory cache if we have it, regardless of TTL
+
     if (key && memoryCache.has(key)) {
       return memoryCache.get(key)!.data;
     }
-    
-    // Then try IndexedDB cache
+
     try {
       const cachedSnap = await getDocFromCache(reference);
       return cachedSnap;
     } catch {
       // IndexedDB cache miss
     }
-    
-    // If it's a quota error or transient offline/unavailable error, return a graceful empty snapshot
+
     if (isQuotaError(error)) {
       console.warn('Gracefully handling quota exceeded for getDoc by returning empty snapshot.');
       notifyQuotaExceeded();
@@ -337,7 +444,7 @@ export const getDoc = async <AppModelType, DbModelType extends firestore.Documen
         metadata: { hasPendingWrites: false, fromCache: true, isEqual: () => false }
       } as any;
     }
-    
+
     throw error;
   }
 };
@@ -351,6 +458,22 @@ export const getDocs = async <AppModelType, DbModelType extends firestore.Docume
     const entry = memoryCache.get(key)!;
     if (now - entry.timestamp < CACHE_TTL || now < quotaCooldownUntil) {
       return entry.data;
+    }
+  }
+
+  // Check persistent IndexedDB cache first if fresh timestamp exists (survives page refresh with 0 reads)
+  const persisted = getPersistedCacheEntry(key);
+  if (persisted && (now - persisted.ts < CACHE_TTL || now < quotaCooldownUntil)) {
+    try {
+      const cachedRes = await getDocsFromCache(query);
+      if (cachedRes.size > 0 || persisted.hasDocs === false) {
+        if (key) {
+          memoryCache.set(key, { data: cachedRes, timestamp: persisted.ts });
+        }
+        return cachedRes;
+      }
+    } catch {
+      // Cache miss in IndexedDB, proceed to server
     }
   }
 
@@ -379,25 +502,23 @@ export const getDocs = async <AppModelType, DbModelType extends firestore.Docume
     }
     if (key) {
       memoryCache.set(key, { data: res, timestamp: now });
+      setPersistedCacheEntry(key, now, res.size > 0);
     }
     return res;
   } catch (error: any) {
     console.warn(`Firestore getDocs failed:`, error?.message || error);
-    
-    // First try the in-memory cache if we have it, regardless of TTL
+
     if (key && memoryCache.has(key)) {
       return memoryCache.get(key)!.data;
     }
-    
-    // Then try IndexedDB cache
+
     try {
       const cachedRes = await getDocsFromCache(query);
       return cachedRes;
     } catch {
       // IndexedDB cache miss
     }
-    
-    // If it's a quota error or transient offline/unavailable error, return a graceful empty snapshot
+
     if (isQuotaError(error)) {
       console.warn('Gracefully handling quota exceeded for getDocs by returning empty snapshot.');
       notifyQuotaExceeded();
@@ -423,7 +544,7 @@ export const getDocs = async <AppModelType, DbModelType extends firestore.Docume
         metadata: { hasPendingWrites: false, fromCache: true, isEqual: () => false }
       } as any;
     }
-    
+
     throw error;
   }
 };

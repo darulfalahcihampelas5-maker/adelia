@@ -5,7 +5,7 @@ import {
   ChevronRight, Smile, Frown, Coffee, ShieldAlert, Award, Pencil, Download, Trash2, ChevronDown
 } from 'lucide-react';
 import { generatePDF } from '../lib/pdfUtils';
-import { collection, getDocs, setDoc, doc, serverTimestamp, query, where, getDoc, db, auth, deleteDoc, clearCache } from '../lib/firebase';
+import { collection, getDocs, setDoc, doc, serverTimestamp, query, where, getDoc, db, auth, deleteDoc } from '../lib/firebase';
 import { getDocs as getDocsFromServer } from 'firebase/firestore';
 
 enum OperationType {
@@ -120,7 +120,19 @@ export default function AbsensiSiswa({ initialKelas }: { initialKelas?: string }
   });
   const [downloadingPdf, setDownloadingPdf] = useState(false);
   const [hasSavedData, setHasSavedData] = useState<boolean>(false);
-  const [meetingsByClass, setMeetingsByClass] = useState<Record<string, number>>({});
+  const [meetingsByClass, setMeetingsByClass] = useState<Record<string, number>>(() => {
+    try {
+      const saved = localStorage.getItem('sacil_meetings_by_class');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+  const [loadedClassData, setLoadedClassData] = useState<{
+    kelasName: string;
+    siswa: Siswa[];
+    absensiRecords: Array<{ id: string; siswaId?: string; tanggal?: string; status?: string; kelas?: string }>;
+  } | null>(null);
   const [isKelasDropdownOpen, setIsKelasDropdownOpen] = useState<boolean>(false);
   const [isTypeDropdownOpen, setIsTypeDropdownOpen] = useState<boolean>(false);
   const [deleteConfirmation, setDeleteConfirmation] = useState<{
@@ -135,7 +147,87 @@ export default function AbsensiSiswa({ initialKelas }: { initialKelas?: string }
     if (initialKelas) setSelectedKelas(initialKelas);
   }, [initialKelas]);
 
-  const loadClassData = async (kelasName: string, targetDate: string) => {
+  const applyClassSnapshotToState = (
+    kelasName: string,
+    sList: Siswa[],
+    absensiRecords: Array<{ id: string; siswaId?: string; tanggal?: string; status?: string; kelas?: string }>,
+    targetDate: string
+  ) => {
+    const uniqueDates = new Set<string>();
+    const statsMap: Record<string, StudentPreviewStats> = {};
+
+    sList.forEach(s => {
+      statsMap[s.id] = {
+        siswaId: s.id,
+        namaSiswa: s.namaSiswa,
+        nisn: s.nisn,
+        hadir: 0,
+        sakit: 0,
+        izin: 0,
+        alpa: 0,
+        dispen: 0
+      };
+    });
+
+    const targetAttendance: Record<string, AttendanceStatus> = {};
+    sList.forEach(s => {
+      targetAttendance[s.id] = 'Hadir';
+    });
+
+    let dataExistsForTargetDate = false;
+
+    absensiRecords.forEach((data) => {
+      if (data.tanggal) {
+        uniqueDates.add(data.tanggal);
+      }
+
+      if (data.siswaId && statsMap[data.siswaId]) {
+        const status = data.status;
+        if (status === 'Hadir') statsMap[data.siswaId].hadir++;
+        else if (status === 'Sakit') statsMap[data.siswaId].sakit++;
+        else if (status === 'Izin') statsMap[data.siswaId].izin++;
+        else if (status === 'Alpa') statsMap[data.siswaId].alpa++;
+        else if (status === 'Dispen') statsMap[data.siswaId].dispen++;
+      }
+
+      if (data.tanggal === targetDate && data.siswaId) {
+        targetAttendance[data.siswaId] = (data.status || 'Hadir') as AttendanceStatus;
+        dataExistsForTargetDate = true;
+      }
+    });
+
+    const sortedDates = Array.from(uniqueDates).sort((a, b) => b.localeCompare(a));
+    setAbsensiDates(sortedDates);
+    setJumlahHariEfektif(sortedDates.length);
+
+    setMeetingsByClass(prev => {
+      const updated = { ...prev, [kelasName]: sortedDates.length };
+      try {
+        localStorage.setItem('sacil_meetings_by_class', JSON.stringify(updated));
+      } catch {
+        // Ignore storage error
+      }
+      return updated;
+    });
+
+    const sortedStats = Object.values(statsMap).sort((a, b) => {
+      const nameA = a.namaSiswa || "";
+      const nameB = b.namaSiswa || "";
+      return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
+    });
+    setPreviewStats(sortedStats);
+
+    setAttendance(targetAttendance);
+    setIsEditing(!dataExistsForTargetDate);
+    setHasSavedData(dataExistsForTargetDate);
+    if (dataExistsForTargetDate) {
+      setSavedInfo({ tanggal: targetDate, kelas: kelasName });
+    } else {
+      setSavedInfo(null);
+    }
+  };
+
+  const loadClassData = async (kelasName: string, targetDate: string, forceReload: boolean = false) => {
     if (!kelasName) {
       setSiswaList([]);
       setAttendance({});
@@ -144,6 +236,14 @@ export default function AbsensiSiswa({ initialKelas }: { initialKelas?: string }
       setPreviewStats([]);
       setHasSavedData(false);
       setSavedInfo(null);
+      setLoadedClassData(null);
+      return;
+    }
+
+    // Switching dates within the already-loaded class uses in-memory records (0 Firestore reads)
+    if (!forceReload && loadedClassData && loadedClassData.kelasName === kelasName) {
+      setSiswaList(loadedClassData.siswa);
+      applyClassSnapshotToState(kelasName, loadedClassData.siswa, loadedClassData.absensiRecords, targetDate);
       return;
     }
 
@@ -154,10 +254,9 @@ export default function AbsensiSiswa({ initialKelas }: { initialKelas?: string }
       const qSiswa = query(collection(db, 'siswa'), where('kelas', '==', kelasName));
       const querySnapshotSiswa = await getDocs(qSiswa);
       const sList: Siswa[] = [];
-      querySnapshotSiswa.forEach((doc) => {
-        sList.push({ id: doc.id, ...doc.data() } as Siswa);
+      querySnapshotSiswa.forEach((docSnap) => {
+        sList.push({ id: docSnap.id, ...docSnap.data() } as Siswa);
       });
-      // Sort students alphabetically safely
       sList.sort((a, b) => {
         const nameA = a.namaSiswa || "";
         const nameB = b.namaSiswa || "";
@@ -165,113 +264,29 @@ export default function AbsensiSiswa({ initialKelas }: { initialKelas?: string }
       });
       setSiswaList(sList);
 
-      // 2. Fetch ALL attendance records of this class to:
-      //    a) Get all unique dates (for absensiDates and jumlahHariEfektif of this class)
-      //    b) Calculate preview statistics for each student
-      //    c) Find if there is saved data for the targetDate
+      // 2. Fetch attendance records ONLY for the selected class
       const qAbsensiAll = query(collection(db, 'absensi'), where('kelas', '==', kelasName));
       const querySnapshotAbsensi = await getDocs(qAbsensiAll);
-      
-      const uniqueDates = new Set<string>();
-      const statsMap: Record<string, StudentPreviewStats> = {};
-      
-      // Initialize statsMap for each student
-      sList.forEach(s => {
-        statsMap[s.id] = {
-          siswaId: s.id,
-          namaSiswa: s.namaSiswa,
-          nisn: s.nisn,
-          hadir: 0,
-          sakit: 0,
-          izin: 0,
-          alpa: 0,
-          dispen: 0
-        };
-      });
-
-      // Initialize attendance state for targetDate (default to 'Hadir')
-      const targetAttendance: Record<string, AttendanceStatus> = {};
-      sList.forEach(s => {
-        targetAttendance[s.id] = 'Hadir';
-      });
-
-      let dataExistsForTargetDate = false;
-
+      const absensiRecords: Array<{ id: string; siswaId?: string; tanggal?: string; status?: string; kelas?: string }> = [];
       querySnapshotAbsensi.forEach((docSnap) => {
-        const data = docSnap.data();
-        if (data.tanggal) {
-          uniqueDates.add(data.tanggal);
-        }
-
-        // Aggregate stats for students
-        if (data.siswaId && statsMap[data.siswaId]) {
-          const status = data.status;
-          if (status === 'Hadir') statsMap[data.siswaId].hadir++;
-          else if (status === 'Sakit') statsMap[data.siswaId].sakit++;
-          else if (status === 'Izin') statsMap[data.siswaId].izin++;
-          else if (status === 'Alpa') statsMap[data.siswaId].alpa++;
-          else if (status === 'Dispen') statsMap[data.siswaId].dispen++;
-        }
-
-        // Check if there's a record for the targetDate
-        if (data.tanggal === targetDate && data.siswaId) {
-          targetAttendance[data.siswaId] = (data.status || 'Hadir') as AttendanceStatus;
-          dataExistsForTargetDate = true;
-        }
+        const d = docSnap.data();
+        absensiRecords.push({
+          id: docSnap.id,
+          siswaId: d.siswaId,
+          tanggal: d.tanggal,
+          status: d.status,
+          kelas: d.kelas
+        });
       });
 
-      const sortedDates = Array.from(uniqueDates).sort((a, b) => b.localeCompare(a));
-      setAbsensiDates(sortedDates);
-      setJumlahHariEfektif(sortedDates.length);
-
-      const sortedStats = Object.values(statsMap).sort((a, b) => {
-        const nameA = a.namaSiswa || "";
-        const nameB = b.namaSiswa || "";
-        return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
-      });
-      setPreviewStats(sortedStats);
-
-      setAttendance(targetAttendance);
-      setIsEditing(!dataExistsForTargetDate);
-      setHasSavedData(dataExistsForTargetDate);
-      if (dataExistsForTargetDate) {
-        setSavedInfo({ tanggal: targetDate, kelas: kelasName });
-      } else {
-        setSavedInfo(null);
-      }
+      setLoadedClassData({ kelasName, siswa: sList, absensiRecords });
+      applyClassSnapshotToState(kelasName, sList, absensiRecords, targetDate);
     } catch (error: any) {
       console.error("Error loading class data:", error);
       showNotification(`Gagal memuat data kelas: ${error.message || 'Kesalahan sistem'}`, "error");
     } finally {
       setFetchingSiswa(false);
       setFetchingAttendance(false);
-    }
-  };
-
-  const fetchMeetingsCountPerClass = async () => {
-    try {
-      const q = query(collection(db, 'absensi'));
-      const querySnapshot = await getDocs(q);
-      const classDates: Record<string, Set<string>> = {};
-      
-      querySnapshot.forEach((docSnap) => {
-        const data = docSnap.data();
-        if (data.kelas && data.tanggal) {
-          if (!classDates[data.kelas]) {
-            classDates[data.kelas] = new Set<string>();
-          }
-          classDates[data.kelas].add(data.tanggal);
-        }
-      });
-      
-      const counts: Record<string, number> = {};
-      Object.keys(classDates).forEach(className => {
-        counts[className] = classDates[className].size;
-      });
-      
-      setMeetingsByClass(counts);
-    } catch (error) {
-      console.error("Error fetching meetings count per class:", error);
     }
   };
 
@@ -299,7 +314,6 @@ export default function AbsensiSiswa({ initialKelas }: { initialKelas?: string }
           return namaA.localeCompare(namaB, undefined, { numeric: true, sensitivity: 'base' });
         });
         setKelasList(list);
-        await fetchMeetingsCountPerClass();
       } catch (error: any) {
         console.error("Error fetching kelas:", error);
         showNotification(`Gagal mengambil data kelas: ${error.message || 'Kesalahan sistem'}`, "error");
@@ -359,15 +373,21 @@ export default function AbsensiSiswa({ initialKelas }: { initialKelas?: string }
       });
 
       await Promise.all(promises);
-      
-      // Clear cache so that loadClassData fetches fresh data from Firestore
-      clearCache();
 
-      setSavedInfo({ tanggal, kelas: selectedKelas });
-      setIsEditing(false);
-      setHasSavedData(true);
-      await loadClassData(selectedKelas, tanggal);
-      await fetchMeetingsCountPerClass();
+      // Update in-memory class records immediately without re-scanning all collections
+      const existingRecords = (loadedClassData?.kelasName === selectedKelas ? loadedClassData.absensiRecords : [])
+        .filter(r => r.tanggal !== tanggal);
+      const updatedForDate = siswaList.map(siswa => ({
+        id: `${tanggal}_${siswa.id}`,
+        siswaId: siswa.id,
+        tanggal,
+        status: attendance[siswa.id] || 'Hadir',
+        kelas: selectedKelas
+      }));
+      const nextRecords = [...existingRecords, ...updatedForDate];
+      setLoadedClassData({ kelasName: selectedKelas, siswa: siswaList, absensiRecords: nextRecords });
+      applyClassSnapshotToState(selectedKelas, siswaList, nextRecords, tanggal);
+
       showNotification(`Absensi Kelas ${selectedKelas} tanggal ${formatIndonesianDate(tanggal)} berhasil disimpan!`, "success");
     } catch (error) {
       console.error("Error saving attendance:", error);
@@ -430,24 +450,13 @@ export default function AbsensiSiswa({ initialKelas }: { initialKelas?: string }
       });
 
       await Promise.all(promises);
-      
-      // Clear cache so that loadClassData fetches fresh data from Firestore
-      clearCache();
-      
-      // If the targetDate is the currently selected date, reset active attendance state
-      if (tanggal === targetDate) {
-        const initialAttendance: Record<string, AttendanceStatus> = {};
-        siswaList.forEach(s => {
-          initialAttendance[s.id] = 'Hadir';
-        });
-        setAttendance(initialAttendance);
-        setIsEditing(true);
-        setHasSavedData(false);
-        setSavedInfo(null);
-      }
-      
-      await loadClassData(selectedKelas, tanggal);
-      await fetchMeetingsCountPerClass();
+
+      // Update in-memory class records immediately without wiping unrelated collection caches
+      const remainingRecords = (loadedClassData?.kelasName === selectedKelas ? loadedClassData.absensiRecords : [])
+        .filter(r => r.tanggal !== targetDate && !docIdsToDelete.has(r.id));
+      setLoadedClassData({ kelasName: selectedKelas, siswa: siswaList, absensiRecords: remainingRecords });
+      applyClassSnapshotToState(selectedKelas, siswaList, remainingRecords, tanggal);
+
       showNotification(`Data presensi Kelas ${selectedKelas} tanggal ${formatIndonesianDate(targetDate)} berhasil dihapus.`, "success");
     } catch (error) {
       console.error("Error deleting attendance for date:", error);

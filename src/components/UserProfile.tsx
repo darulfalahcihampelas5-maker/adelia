@@ -138,6 +138,9 @@ export default function UserProfile() {
         tahunPelajaran,
       });
       setIsEditing(false);
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('user-profile-updated', { detail: { profilePic } }));
+      }
       setShowSuccessMessage(true);
       setTimeout(() => setShowSuccessMessage(false), 3000);
     } catch (e) {

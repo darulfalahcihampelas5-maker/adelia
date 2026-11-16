@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { collection, getDocs, query, orderBy, doc, getDoc, setDoc, deleteDoc, where, db, isQuotaError } from '../lib/firebase';
 import { Save, FileSpreadsheet, Table, FileText, Edit2, CheckCircle, XCircle, Trash2, X, ChevronDown, Check, Sliders, Award } from 'lucide-react';
 import ConfirmationDialog from './ConfirmationDialog';
-import * as XLSX from 'xlsx';
+import * as XLSX from 'xlsx-js-style';
 import { generatePDF } from '../lib/pdfUtils';
 
 interface Siswa {
@@ -34,9 +34,15 @@ const EMPTY_BOBOT: BobotNilai = {
 const KATEGORI_OPTIONS: { value: 'Tugas' | 'Ulangan' | 'PTS' | 'ASAS'; label: string }[] = [
   { value: 'Tugas', label: 'Tugas' },
   { value: 'Ulangan', label: 'Ulangan' },
-  { value: 'PTS', label: 'PTS' },
-  { value: 'ASAS', label: 'ASAS' },
+  { value: 'PTS', label: 'PTS/STS' },
+  { value: 'ASAS', label: 'ASAS/PSAS' },
 ];
+
+function formatKategoriLabel(kat: 'Tugas' | 'Ulangan' | 'PTS' | 'ASAS'): string {
+  if (kat === 'PTS') return 'PTS/STS';
+  if (kat === 'ASAS') return 'ASAS/PSAS';
+  return kat;
+}
 
 const KATEGORI_BADGE_COLORS: Record<string, string> = {
   'Tugas': 'bg-blue-50 text-blue-700 border-blue-200',
@@ -50,8 +56,8 @@ const KATEGORI_BADGE_COLORS: Record<string, string> = {
 function normalizeKategori(k: string | undefined): 'Tugas' | 'Ulangan' | 'PTS' | 'ASAS' {
   if (!k) return 'Tugas';
   const lower = k.toLowerCase();
-  if (lower.includes('pts') || lower.includes('tengah')) return 'PTS';
-  if (lower.includes('asas') || lower.includes('akhir')) return 'ASAS';
+  if (lower.includes('pts') || lower.includes('sts') || lower.includes('tengah')) return 'PTS';
+  if (lower.includes('asas') || lower.includes('psas') || lower.includes('akhir')) return 'ASAS';
   if (lower.includes('ulangan') || lower.includes('uh') || lower.includes('kuis') || lower.includes('sumatif')) return 'Ulangan';
   return 'Tugas';
 }
@@ -82,7 +88,7 @@ export default function NilaiSiswa() {
   const [isSavingBobot, setIsSavingBobot] = useState(false);
 
   // Attendance percentage per student for selected class
-  const [attendancePctMap, setAttendancePctMap] = useState<Record<string, number | null>>({});
+  const [classPresentCounts, setClassPresentCounts] = useState<Record<string, number>>({});
   const [jumlahHariEfektif, setJumlahHariEfektif] = useState(0);
 
   const [isKelasOpen, setIsKelasOpen] = useState(false);
@@ -177,7 +183,7 @@ export default function NilaiSiswa() {
           nilai: allTasksData[judulTugas]
         }, { merge: true });
       }
-      setNotification({ message: `Kategori "${judulTugas}" diubah ke ${newKategori} di database!`, type: 'success' });
+      setNotification({ message: `Kategori "${judulTugas}" diubah ke ${formatKategoriLabel(newKategori)} di database!`, type: 'success' });
       setTimeout(() => setNotification(null), 2500);
     } catch (error) {
       console.warn("Failed updating task category:", error);
@@ -325,66 +331,53 @@ export default function NilaiSiswa() {
   }, []);
 
   useEffect(() => {
-    const fetchTugasListAndData = async () => {
-        try {
-            const q = query(collection(db, 'nilai'));
-            const snapshot = await getDocs(q);
-            const allTasks = new Set<string>(); // Global tasks
-            const tasksDataForKelas: Record<string, Record<string, string>> = {};
-            const tasksDatesForKelas: Record<string, string> = {};
-            const categoriesMap: Record<string, string> = {};
+    const fetchTugasListForKelas = async () => {
+      if (!kelas) {
+        setAllTasksData({});
+        setAllTasksDates({});
+        return;
+      }
+      try {
+        // Only query nilai documents for the selected class instead of scanning all classes
+        const q = query(collection(db, 'nilai'), where('kelas', '==', kelas));
+        const snapshot = await getDocs(q);
+        const tasksDataForKelas: Record<string, Record<string, string>> = {};
+        const tasksDatesForKelas: Record<string, string> = {};
+        const discoveredTasks: string[] = [];
+        const categoriesMap: Record<string, string> = {};
 
-            snapshot.docs.forEach(docSnap => {
-                const data = docSnap.data();
-                if (data.judulTugas) {
-                    allTasks.add(data.judulTugas);
-                    if (data.kategori) {
-                        categoriesMap[data.judulTugas] = normalizeKategori(data.kategori);
-                    }
-                }
-
-                if (kelas && data.kelas === kelas) {
-                    tasksDataForKelas[data.judulTugas] = data.nilai || {};
-                    tasksDatesForKelas[data.judulTugas] = data.date || '';
-                }
-            });
-
-            // Also fetch from central 'daftar_tugas' collection
-            const qDaftarTugas = query(collection(db, 'daftar_tugas'));
-            const snapshotDaftarTugas = await getDocs(qDaftarTugas);
-            snapshotDaftarTugas.docs.forEach(docSnap => {
-                const data = docSnap.data();
-                if (data.judulTugas) {
-                    allTasks.add(data.judulTugas);
-                    if (data.kategori) {
-                        categoriesMap[data.judulTugas] = normalizeKategori(data.kategori);
-                    }
-                }
-            });
-
-            setTugasList(Array.from(allTasks));
-            setTaskCategories(prev => ({ ...prev, ...categoriesMap }));
-            if (kelas) {
-                setAllTasksData(tasksDataForKelas);
-                setAllTasksDates(tasksDatesForKelas);
-            } else {
-                setAllTasksData({});
-                setAllTasksDates({});
+        snapshot.docs.forEach(docSnap => {
+          const data = docSnap.data();
+          if (data.judulTugas) {
+            discoveredTasks.push(data.judulTugas);
+            if (data.kategori) {
+              categoriesMap[data.judulTugas] = normalizeKategori(data.kategori);
             }
-        } catch (error) {
-            if (!isQuotaError(error)) {
-              console.warn("Error fetching tasks list and data:", error);
-            }
+            tasksDataForKelas[data.judulTugas] = data.nilai || {};
+            tasksDatesForKelas[data.judulTugas] = data.date || '';
+          }
+        });
+
+        if (discoveredTasks.length > 0) {
+          setTugasList(prev => Array.from(new Set([...prev, ...discoveredTasks])));
+          setTaskCategories(prev => ({ ...prev, ...categoriesMap }));
         }
+        setAllTasksData(tasksDataForKelas);
+        setAllTasksDates(tasksDatesForKelas);
+      } catch (error) {
+        if (!isQuotaError(error)) {
+          console.warn("Error fetching class nilai data:", error);
+        }
+      }
     };
-    fetchTugasListAndData();
+    fetchTugasListForKelas();
   }, [kelas]);
 
-  // Fetch attendance percentage per student whenever kelas changes
+  // Fetch attendance summary only when kelas changes (never re-query on siswaList reference changes)
   useEffect(() => {
     const fetchAttendanceForClass = async () => {
       if (!kelas) {
-        setAttendancePctMap({});
+        setClassPresentCounts({});
         setJumlahHariEfektif(0);
         return;
       }
@@ -402,21 +395,8 @@ export default function NilaiSiswa() {
           }
         });
 
-        const totalDays = uniqueDates.size;
-        setJumlahHariEfektif(totalDays);
-
-        const pctMap: Record<string, number | null> = {};
-        siswaList
-          .filter(s => s.kelas === kelas)
-          .forEach(s => {
-            if (totalDays > 0) {
-              const hadir = presentCounts[s.id] || 0;
-              pctMap[s.id] = (hadir / totalDays) * 100;
-            } else {
-              pctMap[s.id] = null;
-            }
-          });
-        setAttendancePctMap(pctMap);
+        setJumlahHariEfektif(uniqueDates.size);
+        setClassPresentCounts(presentCounts);
       } catch (error) {
         if (!isQuotaError(error)) {
           console.warn("Error fetching attendance for class:", error);
@@ -424,7 +404,23 @@ export default function NilaiSiswa() {
       }
     };
     fetchAttendanceForClass();
-  }, [kelas, siswaList]);
+  }, [kelas]);
+
+  const attendancePctMap = useMemo(() => {
+    const pctMap: Record<string, number | null> = {};
+    if (!kelas) return pctMap;
+    siswaList
+      .filter(s => s.kelas === kelas)
+      .forEach(s => {
+        if (jumlahHariEfektif > 0) {
+          const hadir = classPresentCounts[s.id] || 0;
+          pctMap[s.id] = (hadir / jumlahHariEfektif) * 100;
+        } else {
+          pctMap[s.id] = null;
+        }
+      });
+    return pctMap;
+  }, [kelas, siswaList, classPresentCounts, jumlahHariEfektif]);
 
   const fetchData = async () => {
     try {
@@ -439,6 +435,24 @@ export default function NilaiSiswa() {
       const sList = siswaSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Siswa));
       sList.sort((a, b) => (a.namaSiswa || '').localeCompare(b.namaSiswa || '', undefined, { numeric: true, sensitivity: 'base' }));
       setSiswaList(sList);
+
+      // Load daftar_tugas once on mount instead of every time kelas changes
+      const snapshotDaftarTugas = await getDocs(query(collection(db, 'daftar_tugas')));
+      const masterTasks: string[] = [];
+      const categoriesMap: Record<string, string> = {};
+      snapshotDaftarTugas.docs.forEach(docSnap => {
+        const data = docSnap.data();
+        if (data.judulTugas) {
+          masterTasks.push(data.judulTugas);
+          if (data.kategori) {
+            categoriesMap[data.judulTugas] = normalizeKategori(data.kategori);
+          }
+        }
+      });
+      if (masterTasks.length > 0) {
+        setTugasList(prev => Array.from(new Set([...masterTasks, ...prev])));
+        setTaskCategories(prev => ({ ...categoriesMap, ...prev }));
+      }
 
       // Load saved Bobot Nilai directly from Firestore
       const bobotSnap = await getDoc(doc(db, 'bobot_nilai', 'main'));
@@ -509,21 +523,19 @@ export default function NilaiSiswa() {
   };
 
   useEffect(() => {
-    const fetchNilai = async () => {
-        if (judulTugas && kelas) {
-            const docRef = doc(db, 'nilai', `${judulTugas}_${kelas}`);
-            const docSnap = await getDoc(docRef);
-            if (docSnap.exists()) {
-                setNilai(docSnap.data().nilai);
-                setIsSaved(true);
-            } else {
-                setNilai({});
-                setIsSaved(false);
-            }
-        }
-    };
-    fetchNilai();
-  }, [judulTugas, kelas]);
+    if (!judulTugas || !kelas) {
+      setNilai({});
+      setIsSaved(false);
+      return;
+    }
+    if (allTasksData[judulTugas] !== undefined) {
+      setNilai(allTasksData[judulTugas]);
+      setIsSaved(true);
+    } else {
+      setNilai({});
+      setIsSaved(false);
+    }
+  }, [judulTugas, kelas, allTasksData]);
 
   const getPreviewTasks = () => {
     const gradedTasks = tugasList
@@ -628,26 +640,97 @@ export default function NilaiSiswa() {
 
   const handleExportExcel = () => {
     const exportTasks = getPreviewTasks();
-    
-    const data = filteredSiswa.map((s, idx) => {
-        const pct = attendancePctMap[s.id];
-        const row: any = {
-            'No': idx + 1,
-            'Nama Siswa': s.namaSiswa,
-            'NIS': s.nisn,
-            'Kelas': kelas,
-            [`Nilai Kehadiran (${Number(bobotNilai.kehadiran) || 0}%)`]: pct !== null && pct !== undefined ? Math.round(pct) : '-',
-        };
-        exportTasks.forEach(tugas => {
-            const dateStr = allTasksDates[tugas] ? ` (${new Date(allTasksDates[tugas]).toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: '2-digit' })})` : '';
-            row[`${tugas} [${normalizeKategori(getTaskCategory(tugas))}]${dateStr}`] = allTasksData[tugas]?.[s.id] || '-';
-        });
-        row['Nilai Rapor'] = Math.round(computeNilaiRapor(s.id));
-        return row;
-    });
-    const ws = XLSX.utils.json_to_sheet(data);
 
-    const colWidths = [{ wch: 5 }, { wch: 30 }, { wch: 15 }, { wch: 10 }, { wch: 18 }, ...exportTasks.map(() => ({ wch: 14 })), { wch: 14 }];
+    const headers = [
+      'No',
+      'Nama Lengkap',
+      'NIS',
+      'Kelas',
+      `Nilai Kehadiran (${Number(bobotNilai.kehadiran) || 0}%)`,
+      ...exportTasks.map(tugas => {
+        const dateStr = allTasksDates[tugas]
+          ? ` (${new Date(allTasksDates[tugas]).toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: '2-digit' })})`
+          : '';
+        return `${tugas} [${formatKategoriLabel(normalizeKategori(getTaskCategory(tugas)))}]${dateStr}`;
+      }),
+      'Nilai Rapor'
+    ];
+
+    const rows = filteredSiswa.map((s, idx) => {
+      const pct = attendancePctMap[s.id];
+      const kehadiranVal = pct !== null && pct !== undefined ? Math.round(pct) : '-';
+      const taskVals = exportTasks.map(tugas => {
+        const raw = allTasksData[tugas]?.[s.id];
+        if (raw === undefined || raw === null || String(raw).trim() === '') return '-';
+        const num = Number(raw);
+        return !isNaN(num) ? num : raw;
+      });
+      return [
+        idx + 1,
+        s.namaSiswa,
+        s.nisn,
+        kelas,
+        kehadiranVal,
+        ...taskVals,
+        Math.round(computeNilaiRapor(s.id))
+      ];
+    });
+
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+
+    const thinBorder = {
+      top: { style: 'thin', color: { rgb: 'D1D5DB' } },
+      bottom: { style: 'thin', color: { rgb: 'D1D5DB' } },
+      left: { style: 'thin', color: { rgb: 'D1D5DB' } },
+      right: { style: 'thin', color: { rgb: 'D1D5DB' } }
+    };
+
+    const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
+    for (let r = range.s.r; r <= range.e.r; r++) {
+      for (let c = range.s.c; c <= range.e.c; c++) {
+        const cellAddr = XLSX.utils.encode_cell({ r, c });
+        if (!ws[cellAddr]) continue;
+
+        if (r === 0) {
+          // Header row: centered horizontally & vertically with wrapText
+          ws[cellAddr].s = {
+            font: { bold: true, color: { rgb: '111827' }, sz: 11 },
+            alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+            fill: { fgColor: { rgb: 'F3F4F6' } },
+            border: thinBorder
+          };
+        } else {
+          // Body rows: Nama Lengkap (col 1) left-aligned; No, NIS, Kelas, and ALL scores centered
+          const isNamaCol = c === 1;
+          const isRaporCol = c === range.e.c;
+          ws[cellAddr].s = {
+            font: {
+              bold: isRaporCol,
+              color: { rgb: isRaporCol ? 'D84863' : '1F2937' },
+              sz: 10
+            },
+            alignment: {
+              horizontal: isNamaCol ? 'left' : 'center',
+              vertical: 'center'
+            },
+            border: thinBorder
+          };
+        }
+      }
+    }
+
+    // Set taller header row height so wrapped column titles have room
+    ws['!rows'] = [{ hpt: 40 }];
+
+    const colWidths = [
+      { wch: 6 },
+      { wch: 32 },
+      { wch: 16 },
+      { wch: 11 },
+      { wch: 18 },
+      ...exportTasks.map(() => ({ wch: 18 })),
+      { wch: 15 }
+    ];
     ws['!cols'] = colWidths;
 
     const wb = XLSX.utils.book_new();
@@ -663,7 +746,7 @@ export default function NilaiSiswa() {
       '', '', '', '', `(Bobot ${Number(bobotNilai.kehadiran) || 0}%)`,
       ...exportTasks.map(tugas => {
         const dateText = allTasksDates[tugas] ? new Date(allTasksDates[tugas]).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
-        return `${normalizeKategori(getTaskCategory(tugas))}${dateText ? ` (${dateText})` : ''}`;
+        return `${formatKategoriLabel(normalizeKategori(getTaskCategory(tugas)))}${dateText ? ` (${dateText})` : ''}`;
       }),
       `(Bobot ${totalBobot}%)`
     ];
@@ -831,8 +914,8 @@ export default function NilaiSiswa() {
                             { key: 'kehadiran' as keyof BobotNilai, label: 'Kehadiran' },
                             { key: 'tugas' as keyof BobotNilai, label: 'Tugas' },
                             { key: 'ulangan' as keyof BobotNilai, label: 'Ulangan' },
-                            { key: 'pts' as keyof BobotNilai, label: 'PTS' },
-                            { key: 'asas' as keyof BobotNilai, label: 'ASAS' },
+                            { key: 'pts' as keyof BobotNilai, label: 'PTS/STS' },
+                            { key: 'asas' as keyof BobotNilai, label: 'ASAS/PSAS' },
                         ].map((item) => (
                             <div key={item.key} className="bg-white p-3 rounded-xl border border-gray-200 shadow-2xs">
                                 <label className="block text-[11px] font-bold text-gray-600 uppercase tracking-wider mb-1.5">
@@ -1060,7 +1143,7 @@ export default function NilaiSiswa() {
                                                                 <span className="truncate">{t}</span>
                                                                 <div className="flex items-center gap-1.5 shrink-0">
                                                                     <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold border ${KATEGORI_BADGE_COLORS[kat]}`}>
-                                                                        {kat}
+                                                                        {formatKategoriLabel(kat)}
                                                                     </span>
                                                                     {isSelected && <Check className="w-4 h-4 text-[#F06C84]" />}
                                                                 </div>
@@ -1346,7 +1429,7 @@ export default function NilaiSiswa() {
                              <Award className="w-4 h-4 text-[#F06C84] shrink-0" />
                              <span>Bobot Nilai Rapor:</span>
                              <span className="text-gray-700">
-                                 Kehadiran <strong>{Number(bobotNilai.kehadiran) || 0}%</strong> • Tugas <strong>{Number(bobotNilai.tugas) || 0}%</strong> • Ulangan <strong>{Number(bobotNilai.ulangan) || 0}%</strong> • PTS <strong>{Number(bobotNilai.pts) || 0}%</strong> • ASAS <strong>{Number(bobotNilai.asas) || 0}%</strong>
+                                 Kehadiran <strong>{Number(bobotNilai.kehadiran) || 0}%</strong> • Tugas <strong>{Number(bobotNilai.tugas) || 0}%</strong> • Ulangan <strong>{Number(bobotNilai.ulangan) || 0}%</strong> • PTS/STS <strong>{Number(bobotNilai.pts) || 0}%</strong> • ASAS/PSAS <strong>{Number(bobotNilai.asas) || 0}%</strong>
                              </span>
                          </div>
                          <span className="px-2.5 py-0.5 rounded-full bg-white border border-gray-200 text-gray-700 font-bold text-[11px]">
@@ -1358,10 +1441,21 @@ export default function NilaiSiswa() {
                  <div className="overflow-auto border border-gray-300 rounded-xl bg-white shadow-xs">
                      <table className="w-full text-left text-sm text-gray-800 border-collapse">
                          <thead className="text-xs text-gray-900 uppercase bg-gray-100">
+                             <tr className="bg-rose-50/40 text-gray-800 normal-case">
+                                 <th
+                                     colSpan={4 + getPreviewTasks().length}
+                                     className="px-4 py-2.5 text-left text-xs font-bold border border-gray-300"
+                                 >
+                                     Update Nilai : {new Date().toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+                                 </th>
+                                 <th className="px-4 py-2.5 text-center text-xs font-bold text-[#d84863] bg-rose-50/70 border border-gray-300 whitespace-nowrap">
+                                     Kelas : {kelas || '-'}
+                                 </th>
+                             </tr>
                              <tr>
                                  <th className="px-4 py-3 text-center font-bold border border-gray-300" style={{ minWidth: '70px' }}>No</th>
-                                 <th className="px-4 py-3 font-bold border border-gray-300" style={{ minWidth: '180px' }}>Nama Lengkap</th>
-                                 <th className="px-4 py-3 font-bold border border-gray-300" style={{ minWidth: '120px' }}>NIS</th>
+                                 <th className="px-4 py-3 font-bold border border-gray-300 whitespace-nowrap" style={{ minWidth: '220px' }}>Nama Lengkap</th>
+                                 <th className="px-4 py-3 font-bold border border-gray-300 whitespace-nowrap" style={{ minWidth: '120px' }}>NIS</th>
                                  <th className="px-4 py-3 text-center font-bold bg-blue-50/80 text-blue-950 border border-gray-300" style={{ minWidth: '130px' }}>
                                      <div>Nilai Kehadiran</div>
                                      <div className="text-[10px] text-blue-700 font-semibold normal-case mt-0.5">
@@ -1376,7 +1470,7 @@ export default function NilaiSiswa() {
                                              <div className="mt-1 flex flex-col items-center gap-1">
                                                  <div className="inline-flex items-center gap-1">
                                                      <span className={`px-2 py-0.5 rounded text-[9px] font-bold border normal-case ${KATEGORI_BADGE_COLORS[kat]}`}>
-                                                         {kat}
+                                                         {formatKategoriLabel(kat)}
                                                      </span>
                                                      <button
                                                          type="button"
@@ -1428,8 +1522,8 @@ export default function NilaiSiswa() {
                                      return (
                                          <tr key={s.id} className="bg-white hover:bg-gray-50/70 transition-colors">
                                              <td className="px-4 py-3 font-mono font-semibold text-gray-800 text-center border border-gray-300">{idx + 1}</td>
-                                             <td className="px-4 py-3 font-semibold text-gray-900 border border-gray-300">{s.namaSiswa}</td>
-                                             <td className="px-4 py-3 font-medium text-gray-800 border border-gray-300">{s.nisn}</td>
+                                             <td className="px-4 py-3 font-semibold text-gray-900 border border-gray-300 whitespace-nowrap">{s.namaSiswa}</td>
+                                             <td className="px-4 py-3 font-medium text-gray-800 border border-gray-300 whitespace-nowrap">{s.nisn}</td>
                                              <td className="px-4 py-3 text-center font-extrabold text-sm text-blue-900 bg-blue-50/25 border border-gray-300">
                                                  {pct !== null && pct !== undefined ? Math.round(pct) : '-'}
                                              </td>

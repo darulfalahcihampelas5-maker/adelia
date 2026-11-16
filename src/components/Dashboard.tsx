@@ -126,7 +126,16 @@ export default function Dashboard({ onLogout }: { onLogout: () => void, key?: st
       }
     };
     fetchHeaderProfile();
-  }, [activeTab]);
+
+    const handleProfileUpdated = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail && 'profilePic' in detail) {
+        setHeaderProfilePic(detail.profilePic || null);
+      }
+    };
+    window.addEventListener('user-profile-updated', handleProfileUpdated);
+    return () => window.removeEventListener('user-profile-updated', handleProfileUpdated);
+  }, []);
 
   interface StudentAbsensiStats {
     siswaId: string;
@@ -480,7 +489,6 @@ export default function Dashboard({ onLogout }: { onLogout: () => void, key?: st
             <button
               type="button"
               onClick={() => {
-                clearCache();
                 sessionStorage.setItem('sacil_manual_refresh', 'true');
                 window.location.reload();
               }}
