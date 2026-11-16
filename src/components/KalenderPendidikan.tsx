@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
-import { db } from "../lib/firebase";
 import {
+  db,
   collection,
   addDoc,
   getDocs,
@@ -10,7 +10,9 @@ import {
   deleteDoc,
   doc,
   updateDoc,
-} from "firebase/firestore";
+  isQuotaError,
+} from "../lib/firebase";
+import type { Timestamp as FirestoreTimestamp } from "firebase/firestore";
 import {
   Plus,
   Trash2,
@@ -33,7 +35,7 @@ interface Activity {
   date: string; // YYYY-MM-DD
   activity: string;
   type: "Libur" | "Ujian" | "Event" | "Lainnya";
-  createdAt: Timestamp;
+  createdAt: FirestoreTimestamp;
 }
 
 const TYPE_COLORS = {
@@ -86,7 +88,11 @@ export default function KalenderPendidikan() {
       );
       setActivities(data);
     } catch (e) {
-      console.error("Error fetching activities:", e);
+      if (isQuotaError(e)) {
+        console.warn("Kuota Firestore tercapai saat memuat kalender pendidikan.");
+      } else {
+        console.warn("Gagal memuat kalender pendidikan:", e);
+      }
     } finally {
       setIsLoading(false);
     }
@@ -198,8 +204,13 @@ export default function KalenderPendidikan() {
         setAlert(null);
       }, 3500);
     } catch (e) {
-      console.error("Error saving activity:", e);
-      setAlert({ message: "Gagal menyimpan data ke database.", type: "danger" });
+      console.warn("Error saving activity:", e);
+      setAlert({
+        message: isQuotaError(e)
+          ? "Kuota harian database tercapai. Data tidak dapat disimpan sementara waktu."
+          : "Gagal menyimpan data ke database.",
+        type: "danger"
+      });
     } finally {
       setIsSaving(false);
     }
@@ -226,8 +237,13 @@ export default function KalenderPendidikan() {
           setAlert(null);
         }, 3500);
       } catch (e) {
-        console.error("Error deleting activity:", e);
-        setAlert({ message: "Gagal menghapus data dari database.", type: "danger" });
+        console.warn("Error deleting activity:", e);
+        setAlert({
+          message: isQuotaError(e)
+            ? "Kuota harian database tercapai. Data tidak dapat dihapus sementara waktu."
+            : "Gagal menghapus data dari database.",
+          type: "danger"
+        });
       } finally {
         setIsSaving(false);
       }

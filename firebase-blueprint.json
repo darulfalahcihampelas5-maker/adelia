@@ -104,7 +104,51 @@
       "name": "daftar_tugas",
       "fields": [
         { "name": "judulTugas", "type": "string" },
+        { "name": "kategori", "type": "string" },
         { "name": "createdAt", "type": "string" }
+      ],
+      "rules": {
+        "read": "true",
+        "write": "true"
+      }
+    },
+    {
+      "name": "nilai",
+      "fields": [
+        { "name": "judulTugas", "type": "string" },
+        { "name": "kelas", "type": "string" },
+        { "name": "date", "type": "string" },
+        { "name": "kategori", "type": "string" },
+        { "name": "nilai", "type": "map" }
+      ],
+      "rules": {
+        "read": "true",
+        "write": "true"
+      }
+    },
+    {
+      "name": "bobot_nilai",
+      "fields": [
+        { "name": "kehadiran", "type": "number" },
+        { "name": "tugasHarian", "type": "number" },
+        { "name": "ulanganHarian", "type": "number" },
+        { "name": "pts", "type": "number" },
+        { "name": "asas", "type": "number" },
+        { "name": "updatedAt", "type": "string" }
+      ],
+      "rules": {
+        "read": "true",
+        "write": "true"
+      }
+    },
+    {
+      "name": "absensi",
+      "fields": [
+        { "name": "siswaId", "type": "string" },
+        { "name": "namaSiswa", "type": "string" },
+        { "name": "kelas", "type": "string" },
+        { "name": "tanggal", "type": "string" },
+        { "name": "status", "type": "string" }
       ],
       "rules": {
         "read": "true",

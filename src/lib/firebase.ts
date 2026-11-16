@@ -137,10 +137,39 @@ interface CacheEntry {
 
 // Fast in-memory map without blocking synchronous localStorage writes
 const memoryCache = new Map<string, CacheEntry>();
-const CACHE_TTL = 3 * 60 * 1000; // 3 minutes TTL for snappy performance
+const CACHE_TTL = 10 * 60 * 1000; // 10 minutes TTL for snappy performance and maximum quota conservation
+let quotaCooldownUntil = 0;
+const QUOTA_COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes cooldown before retrying network after quota exceeded
+
+export function isQuotaError(error: any): boolean {
+  if (!error) return false;
+  const code = String(error?.code || '').toLowerCase();
+  const message = String(error?.message || error || '').toLowerCase();
+  return (
+    code === 'resource-exhausted' ||
+    message.includes('quota') ||
+    message.includes('exceeded') ||
+    message.includes('resource-exhausted') ||
+    message.includes('resource_exhausted')
+  );
+}
+
+export function getUpgradeDatabaseUrl(): string {
+  const projectId = firebaseConfig.projectId;
+  const dbId = (firebaseConfig as any).firestoreDatabaseId || '(default)';
+  return `https://console.firebase.google.com/project/${projectId}/firestore/databases/${dbId}/data?openUpgradeDialog=true`;
+}
+
+function notifyQuotaExceeded() {
+  quotaCooldownUntil = Date.now() + QUOTA_COOLDOWN_MS;
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('firebase-quota-exceeded'));
+  }
+}
 
 export function clearCache() {
   memoryCache.clear();
+  quotaCooldownUntil = 0;
 }
 
 function getQueryCollectionPath(q: any): string {
@@ -226,49 +255,62 @@ export const getDoc = async <AppModelType, DbModelType extends firestore.Documen
   const now = Date.now();
   if (key && memoryCache.has(key)) {
     const entry = memoryCache.get(key)!;
-    if (now - entry.timestamp < CACHE_TTL) {
+    if (now - entry.timestamp < CACHE_TTL || now < quotaCooldownUntil) {
       return entry.data;
+    }
+  }
+
+  if (now < quotaCooldownUntil) {
+    try {
+      return await getDocFromCache(reference);
+    } catch {
+      return {
+        id: reference.id,
+        ref: reference,
+        exists: () => false,
+        data: () => undefined,
+        get: () => undefined,
+        metadata: { hasPendingWrites: false, fromCache: true, isEqual: () => false }
+      } as any;
     }
   }
 
   try {
     const snap = await firestore.getDoc(reference);
     trackRead(1);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('firebase-quota-recovered'));
+    }
     if (key) {
       memoryCache.set(key, { data: snap, timestamp: now });
     }
     return snap;
   } catch (error: any) {
-    console.warn(`Firestore getDoc failed for ${reference.path}:`, error.message || error);
+    console.warn(`Firestore getDoc failed for ${reference.path}:`, error?.message || error);
     
     // First try the in-memory cache if we have it, regardless of TTL
     if (key && memoryCache.has(key)) {
-      console.log('Serving from stale memory cache due to network failure');
       return memoryCache.get(key)!.data;
     }
     
     // Then try IndexedDB cache
     try {
       const cachedSnap = await getDocFromCache(reference);
-      console.log('Serving from IndexedDB cache due to network failure');
       return cachedSnap;
-    } catch (cacheError) {
-      console.warn('Failed to retrieve from IndexedDB cache as well:', cacheError);
+    } catch {
+      // IndexedDB cache miss
     }
     
     // If it's a quota error, return a graceful empty snapshot instead of throwing
-    const errorMessage = error?.message || String(error);
-    if (errorMessage.toLowerCase().includes('quota') || errorMessage.toLowerCase().includes('exceeded')) {
+    if (isQuotaError(error)) {
       console.warn('Gracefully handling quota exceeded for getDoc by returning empty snapshot.');
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('firebase-quota-exceeded'));
-      }
+      notifyQuotaExceeded();
       return {
         id: reference.id,
         ref: reference,
         exists: () => false,
         data: () => undefined,
-        get: (fieldPath: any) => undefined,
+        get: () => undefined,
         metadata: { hasPendingWrites: false, fromCache: true, isEqual: () => false }
       } as any;
     }
@@ -284,8 +326,24 @@ export const getDocs = async <AppModelType, DbModelType extends firestore.Docume
   const now = Date.now();
   if (key && memoryCache.has(key)) {
     const entry = memoryCache.get(key)!;
-    if (now - entry.timestamp < CACHE_TTL) {
+    if (now - entry.timestamp < CACHE_TTL || now < quotaCooldownUntil) {
       return entry.data;
+    }
+  }
+
+  if (now < quotaCooldownUntil) {
+    try {
+      return await getDocsFromCache(query);
+    } catch {
+      return {
+        docs: [],
+        size: 0,
+        empty: true,
+        query: query,
+        forEach: () => {},
+        docChanges: () => [],
+        metadata: { hasPendingWrites: false, fromCache: true, isEqual: () => false }
+      } as any;
     }
   }
 
@@ -293,41 +351,39 @@ export const getDocs = async <AppModelType, DbModelType extends firestore.Docume
     const res = await firestore.getDocs(query);
     const count = Math.max(1, res.size);
     trackRead(count);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('firebase-quota-recovered'));
+    }
     if (key) {
       memoryCache.set(key, { data: res, timestamp: now });
     }
     return res;
   } catch (error: any) {
-    console.warn(`Firestore getDocs failed:`, error.message || error);
+    console.warn(`Firestore getDocs failed:`, error?.message || error);
     
     // First try the in-memory cache if we have it, regardless of TTL
     if (key && memoryCache.has(key)) {
-      console.log('Serving from stale memory cache due to network failure');
       return memoryCache.get(key)!.data;
     }
     
     // Then try IndexedDB cache
     try {
       const cachedRes = await getDocsFromCache(query);
-      console.log('Serving from IndexedDB cache due to network failure');
       return cachedRes;
-    } catch (cacheError) {
-      console.warn('Failed to retrieve from IndexedDB cache as well:', cacheError);
+    } catch {
+      // IndexedDB cache miss
     }
     
     // If it's a quota error, return a graceful empty snapshot instead of throwing
-    const errorMessage = error?.message || String(error);
-    if (errorMessage.toLowerCase().includes('quota') || errorMessage.toLowerCase().includes('exceeded')) {
+    if (isQuotaError(error)) {
       console.warn('Gracefully handling quota exceeded for getDocs by returning empty snapshot.');
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('firebase-quota-exceeded'));
-      }
+      notifyQuotaExceeded();
       return {
         docs: [],
         size: 0,
         empty: true,
         query: query,
-        forEach: (callback: any) => {},
+        forEach: () => {},
         docChanges: () => [],
         metadata: { hasPendingWrites: false, fromCache: true, isEqual: () => false }
       } as any;
@@ -345,10 +401,15 @@ export const setDoc = async <AppModelType, DbModelType extends firestore.Documen
   trackWrite(1);
   invalidateCacheForPath(reference);
 
-  if (options) {
-    return await firestore.setDoc(reference, data, options);
-  } else {
-    return await firestore.setDoc(reference, data as any);
+  try {
+    if (options) {
+      return await firestore.setDoc(reference, data, options);
+    } else {
+      return await firestore.setDoc(reference, data as any);
+    }
+  } catch (error) {
+    if (isQuotaError(error)) notifyQuotaExceeded();
+    throw error;
   }
 };
 
@@ -358,7 +419,12 @@ export const addDoc = async <AppModelType, DbModelType extends firestore.Documen
 ): Promise<firestore.DocumentReference<AppModelType, DbModelType>> => {
   trackWrite(1);
   invalidateCacheForPath(reference);
-  return await firestore.addDoc(reference, data);
+  try {
+    return await firestore.addDoc(reference, data);
+  } catch (error) {
+    if (isQuotaError(error)) notifyQuotaExceeded();
+    throw error;
+  }
 };
 
 export const updateDoc = async (
@@ -367,7 +433,12 @@ export const updateDoc = async (
 ): Promise<void> => {
   trackWrite(1);
   invalidateCacheForPath(reference);
-  return await (firestore.updateDoc as any)(reference, ...args);
+  try {
+    return await (firestore.updateDoc as any)(reference, ...args);
+  } catch (error) {
+    if (isQuotaError(error)) notifyQuotaExceeded();
+    throw error;
+  }
 };
 
 export const deleteDoc = async (
@@ -375,7 +446,12 @@ export const deleteDoc = async (
 ): Promise<void> => {
   trackWrite(1);
   invalidateCacheForPath(reference);
-  return await firestore.deleteDoc(reference);
+  try {
+    return await firestore.deleteDoc(reference);
+  } catch (error) {
+    if (isQuotaError(error)) notifyQuotaExceeded();
+    throw error;
+  }
 };
 
 // Re-export other standard functions

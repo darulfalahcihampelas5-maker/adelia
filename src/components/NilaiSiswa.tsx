@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { collection, getDocs, query, orderBy, doc, getDoc, setDoc, deleteDoc, where, db } from '../lib/firebase';
-import { Save, FileSpreadsheet, Download, Table, FileText, Edit2, CheckCircle, XCircle, Trash2, X, ChevronDown, Check } from 'lucide-react';
+import { collection, getDocs, query, orderBy, doc, getDoc, setDoc, deleteDoc, where, db, isQuotaError } from '../lib/firebase';
+import { Save, FileSpreadsheet, Table, FileText, Edit2, CheckCircle, XCircle, Trash2, X, ChevronDown, Check, Sliders, RotateCcw, Award } from 'lucide-react';
 import ConfirmationDialog from './ConfirmationDialog';
 import * as XLSX from 'xlsx';
 import { generatePDF } from '../lib/pdfUtils';
@@ -13,16 +13,74 @@ interface Siswa {
   kelas: string;
 }
 
+type KategoriPenilaian = 'Tugas Harian' | 'Ulangan Harian' | 'PTS' | 'ASAS';
+
+interface BobotNilai {
+  kehadiran: number;
+  tugasHarian: number;
+  ulanganHarian: number;
+  pts: number;
+  asas: number;
+}
+
+const DEFAULT_BOBOT: BobotNilai = {
+  kehadiran: 10,
+  tugasHarian: 25,
+  ulanganHarian: 20,
+  pts: 20,
+  asas: 25,
+};
+
+const KATEGORI_OPTIONS: KategoriPenilaian[] = [
+  'Tugas Harian',
+  'Ulangan Harian',
+  'PTS',
+  'ASAS',
+];
+
+const KATEGORI_BADGE_COLORS: Record<KategoriPenilaian, string> = {
+  'Tugas Harian': 'bg-blue-50 text-blue-700 border-blue-200',
+  'Ulangan Harian': 'bg-purple-50 text-purple-700 border-purple-200',
+  'PTS': 'bg-amber-50 text-amber-700 border-amber-200',
+  'ASAS': 'bg-emerald-50 text-emerald-700 border-emerald-200',
+};
+
+function inferKategoriFromTitle(title: string): KategoriPenilaian {
+  const lower = (title || '').toLowerCase();
+  if (/\b(pts|uts)\b|tengah\s*semester/.test(lower)) return 'PTS';
+  if (/\b(asas|pas|uas)\b|akhir\s*semester/.test(lower)) return 'ASAS';
+  if (/\b(uh)\b|ulangan|sumatif|kuis/.test(lower)) return 'Ulangan Harian';
+  return 'Tugas Harian';
+}
+
 export default function NilaiSiswa() {
   const [viewMode, setViewMode] = useState<'input' | 'preview'>('input');
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
   const [kelas, setKelas] = useState('');
   const [judulTugas, setJudulTugas] = useState('');
   const [tempNewTaskTitle, setTempNewTaskTitle] = useState('');
-  const [isNewTask, setIsNewTask] = useState(false);
+  const [tempNewTaskKategori, setTempNewTaskKategori] = useState<KategoriPenilaian>('Tugas Harian');
   const [tugasList, setTugasList] = useState<string[]>([]);
+  const [taskCategories, setTaskCategories] = useState<Record<string, KategoriPenilaian>>({});
   const [kelasList, setKelasList] = useState<{ id: string; namaKelas: string }[]>([]);
   const [siswaList, setSiswaList] = useState<Siswa[]>([]);
+
+  // Bobot Nilai State
+  const [bobotNilai, setBobotNilai] = useState<BobotNilai>(() => {
+    try {
+      const saved = localStorage.getItem('sacil_bobot_nilai');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return { ...DEFAULT_BOBOT, ...parsed };
+      }
+    } catch {}
+    return DEFAULT_BOBOT;
+  });
+  const [isSavingBobot, setIsSavingBobot] = useState(false);
+
+  // Attendance percentage per student for selected class
+  const [attendancePctMap, setAttendancePctMap] = useState<Record<string, number | null>>({});
+  const [jumlahHariEfektif, setJumlahHariEfektif] = useState(0);
 
   const [isKelasOpen, setIsKelasOpen] = useState(false);
   const [isJudulTugasOpen, setIsJudulTugasOpen] = useState(false);
@@ -36,23 +94,97 @@ export default function NilaiSiswa() {
 
   const [isEditingTask, setIsEditingTask] = useState(false);
   const [editedTaskTitle, setEditedTaskTitle] = useState('');
+  const [editedTaskKategori, setEditedTaskKategori] = useState<KategoriPenilaian>('Tugas Harian');
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
 
   const [isEditingPreview, setIsEditingPreview] = useState(false);
   const [previewNilaiEditState, setPreviewNilaiEditState] = useState<Record<string, Record<string, string>>>({});
 
-  const handleEditTask = async (newTitle: string) => {
+  const totalBobot =
+    (Number(bobotNilai.kehadiran) || 0) +
+    (Number(bobotNilai.tugasHarian) || 0) +
+    (Number(bobotNilai.ulanganHarian) || 0) +
+    (Number(bobotNilai.pts) || 0) +
+    (Number(bobotNilai.asas) || 0);
+
+  const getTaskCategory = (taskTitle: string): KategoriPenilaian => {
+    return taskCategories[taskTitle] || inferKategoriFromTitle(taskTitle);
+  };
+
+  const handleSaveBobot = async () => {
+    if (totalBobot !== 100) {
+      setNotification({
+        message: `Total bobot nilai saat ini ${totalBobot}%. Pastikan total seluruh bobot berjumlah 100%.`,
+        type: 'error'
+      });
+      setTimeout(() => setNotification(null), 3500);
+      return;
+    }
+    setIsSavingBobot(true);
+    try {
+      localStorage.setItem('sacil_bobot_nilai', JSON.stringify(bobotNilai));
+      await setDoc(doc(db, 'bobot_nilai', 'main'), {
+        ...bobotNilai,
+        updatedAt: new Date().toISOString()
+      });
+      setNotification({ message: "Bobot Nilai berhasil disimpan!", type: 'success' });
+      setTimeout(() => setNotification(null), 3000);
+    } catch (error) {
+      console.warn("Error saving bobot nilai:", error);
+      setNotification({
+        message: isQuotaError(error)
+          ? "Bobot tersimpan di perangkat ini (kuota database harian tercapai)."
+          : "Gagal menyimpan bobot nilai ke cloud.",
+        type: isQuotaError(error) ? 'success' : 'error'
+      });
+      setTimeout(() => setNotification(null), 3000);
+    } finally {
+      setIsSavingBobot(false);
+    }
+  };
+
+  const handleResetBobot = () => {
+    setBobotNilai(DEFAULT_BOBOT);
+  };
+
+  const handleChangeSelectedTaskKategori = async (newKategori: KategoriPenilaian) => {
+    if (!judulTugas) return;
+    setTaskCategories(prev => ({ ...prev, [judulTugas]: newKategori }));
+    try {
+      await setDoc(doc(db, 'daftar_tugas', judulTugas), {
+        judulTugas,
+        kategori: newKategori,
+        createdAt: new Date().toISOString()
+      }, { merge: true });
+
+      if (kelas && allTasksData[judulTugas] !== undefined) {
+        await setDoc(doc(db, 'nilai', `${judulTugas}_${kelas}`), {
+          judulTugas,
+          kelas,
+          date: allTasksDates[judulTugas] || date,
+          kategori: newKategori,
+          nilai: allTasksData[judulTugas]
+        }, { merge: true });
+      }
+      setNotification({ message: `Kategori "${judulTugas}" diubah ke ${newKategori}.`, type: 'success' });
+      setTimeout(() => setNotification(null), 2500);
+    } catch (error) {
+      console.warn("Failed updating task category:", error);
+    }
+  };
+
+  const handleEditTask = async (newTitle: string, newKategori: KategoriPenilaian) => {
     if (!newTitle.trim()) {
       setNotification({ message: "Nama tugas tidak boleh kosong.", type: 'error' });
       setTimeout(() => setNotification(null), 3000);
       return;
     }
     const oldTitle = judulTugas;
-    if (newTitle === oldTitle) {
+    if (newTitle === oldTitle && newKategori === getTaskCategory(oldTitle)) {
       setIsEditingTask(false);
       return;
     }
-    if (tugasList.includes(newTitle)) {
+    if (newTitle !== oldTitle && tugasList.includes(newTitle)) {
       setNotification({ message: "Nama tugas sudah digunakan.", type: 'error' });
       setTimeout(() => setNotification(null), 3000);
       return;
@@ -62,11 +194,14 @@ export default function NilaiSiswa() {
       const newTaskRef = doc(db, 'daftar_tugas', newTitle);
       await setDoc(newTaskRef, {
         judulTugas: newTitle,
+        kategori: newKategori,
         createdAt: new Date().toISOString()
       });
 
-      const oldTaskRef = doc(db, 'daftar_tugas', oldTitle);
-      await deleteDoc(oldTaskRef);
+      if (newTitle !== oldTitle) {
+        const oldTaskRef = doc(db, 'daftar_tugas', oldTitle);
+        await deleteDoc(oldTaskRef);
+      }
 
       const q = query(collection(db, 'nilai'), where('judulTugas', '==', oldTitle));
       const querySnapshot = await getDocs(q);
@@ -77,37 +212,48 @@ export default function NilaiSiswa() {
         const newNilaiRef = doc(db, 'nilai', `${newTitle}_${kelasName}`);
         await setDoc(newNilaiRef, {
           ...data,
-          judulTugas: newTitle
+          judulTugas: newTitle,
+          kategori: newKategori
         });
-        await deleteDoc(doc(db, 'nilai', d.id));
+        if (newTitle !== oldTitle) {
+          await deleteDoc(doc(db, 'nilai', d.id));
+        }
       }
 
       setTugasList(prev => prev.map(t => t === oldTitle ? newTitle : t));
+      setTaskCategories(prev => {
+        const next = { ...prev };
+        if (newTitle !== oldTitle) delete next[oldTitle];
+        next[newTitle] = newKategori;
+        return next;
+      });
       
-      setAllTasksData(prev => {
-        const next = { ...prev };
-        if (next[oldTitle]) {
-          next[newTitle] = next[oldTitle];
-          delete next[oldTitle];
-        }
-        return next;
-      });
+      if (newTitle !== oldTitle) {
+        setAllTasksData(prev => {
+          const next = { ...prev };
+          if (next[oldTitle]) {
+            next[newTitle] = next[oldTitle];
+            delete next[oldTitle];
+          }
+          return next;
+        });
 
-      setAllTasksDates(prev => {
-        const next = { ...prev };
-        if (next[oldTitle]) {
-          next[newTitle] = next[oldTitle];
-          delete next[oldTitle];
-        }
-        return next;
-      });
+        setAllTasksDates(prev => {
+          const next = { ...prev };
+          if (next[oldTitle]) {
+            next[newTitle] = next[oldTitle];
+            delete next[oldTitle];
+          }
+          return next;
+        });
+      }
 
       setJudulTugas(newTitle);
       setIsEditingTask(false);
-      setNotification({ message: "Nama tugas berhasil diperbarui.", type: 'success' });
+      setNotification({ message: "Tugas berhasil diperbarui.", type: 'success' });
       setTimeout(() => setNotification(null), 3000);
     } catch (error) {
-      console.error("Error editing task title:", error);
+      console.warn("Error editing task title:", error);
       setNotification({ message: "Gagal memperbarui nama tugas.", type: 'error' });
       setTimeout(() => setNotification(null), 3000);
     }
@@ -165,14 +311,18 @@ export default function NilaiSiswa() {
             const allTasks = new Set<string>(); // Global tasks
             const tasksDataForKelas: Record<string, Record<string, string>> = {};
             const tasksDatesForKelas: Record<string, string> = {};
+            const categoriesMap: Record<string, KategoriPenilaian> = {};
 
-            snapshot.docs.forEach(doc => {
-                const data = doc.data();
+            snapshot.docs.forEach(docSnap => {
+                const data = docSnap.data();
                 if (data.judulTugas) {
-                    allTasks.add(data.judulTugas); // Global
+                    allTasks.add(data.judulTugas);
+                    if (data.kategori && KATEGORI_OPTIONS.includes(data.kategori)) {
+                        categoriesMap[data.judulTugas] = data.kategori;
+                    }
                 }
 
-                if (kelas && data.kelas === kelas) { // Class-specific
+                if (kelas && data.kelas === kelas) {
                     tasksDataForKelas[data.judulTugas] = data.nilai || {};
                     tasksDatesForKelas[data.judulTugas] = data.date || '';
                 }
@@ -181,14 +331,18 @@ export default function NilaiSiswa() {
             // Also fetch from central 'daftar_tugas' collection
             const qDaftarTugas = query(collection(db, 'daftar_tugas'));
             const snapshotDaftarTugas = await getDocs(qDaftarTugas);
-            snapshotDaftarTugas.docs.forEach(doc => {
-                const data = doc.data();
+            snapshotDaftarTugas.docs.forEach(docSnap => {
+                const data = docSnap.data();
                 if (data.judulTugas) {
                     allTasks.add(data.judulTugas);
+                    if (data.kategori && KATEGORI_OPTIONS.includes(data.kategori)) {
+                        categoriesMap[data.judulTugas] = data.kategori;
+                    }
                 }
             });
 
-            setTugasList(Array.from(allTasks)); // Set global
+            setTugasList(Array.from(allTasks));
+            setTaskCategories(prev => ({ ...prev, ...categoriesMap }));
             if (kelas) {
                 setAllTasksData(tasksDataForKelas);
                 setAllTasksDates(tasksDatesForKelas);
@@ -197,29 +351,101 @@ export default function NilaiSiswa() {
                 setAllTasksDates({});
             }
         } catch (error) {
-            console.error("Error fetching tasks list and data:", error);
+            if (!isQuotaError(error)) {
+              console.warn("Error fetching tasks list and data:", error);
+            }
         }
     };
     fetchTugasListAndData();
   }, [kelas]);
 
+  // Fetch attendance percentage per student whenever kelas changes
+  useEffect(() => {
+    const fetchAttendanceForClass = async () => {
+      if (!kelas) {
+        setAttendancePctMap({});
+        setJumlahHariEfektif(0);
+        return;
+      }
+      try {
+        const qAbsensi = query(collection(db, 'absensi'), where('kelas', '==', kelas));
+        const absSnapshot = await getDocs(qAbsensi);
+        const uniqueDates = new Set<string>();
+        const presentCounts: Record<string, number> = {};
+
+        absSnapshot.forEach((docSnap) => {
+          const data = docSnap.data();
+          if (data.tanggal) uniqueDates.add(data.tanggal);
+          if (data.siswaId && (data.status === 'Hadir' || data.status === 'Dispen')) {
+            presentCounts[data.siswaId] = (presentCounts[data.siswaId] || 0) + 1;
+          }
+        });
+
+        const totalDays = uniqueDates.size;
+        setJumlahHariEfektif(totalDays);
+
+        const pctMap: Record<string, number | null> = {};
+        siswaList
+          .filter(s => s.kelas === kelas)
+          .forEach(s => {
+            if (totalDays > 0) {
+              const hadir = presentCounts[s.id] || 0;
+              pctMap[s.id] = (hadir / totalDays) * 100;
+            } else {
+              pctMap[s.id] = null;
+            }
+          });
+        setAttendancePctMap(pctMap);
+      } catch (error) {
+        if (!isQuotaError(error)) {
+          console.warn("Error fetching attendance for class:", error);
+        }
+      }
+    };
+    fetchAttendanceForClass();
+  }, [kelas, siswaList]);
+
   const fetchData = async () => {
     try {
       const kelasQuery = query(collection(db, 'kelas'), orderBy('createdAt', 'asc'));
       const kelasSnapshot = await getDocs(kelasQuery);
-      setKelasList(kelasSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as any)));
+      const kList = kelasSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as any));
+      kList.sort((a, b) => (a.namaKelas || '').localeCompare(b.namaKelas || '', undefined, { numeric: true, sensitivity: 'base' }));
+      setKelasList(kList);
 
       const siswaQuery = query(collection(db, 'siswa'), orderBy('namaSiswa', 'asc'));
       const siswaSnapshot = await getDocs(siswaQuery);
-      setSiswaList(siswaSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Siswa)));
+      const sList = siswaSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Siswa));
+      sList.sort((a, b) => (a.namaSiswa || '').localeCompare(b.namaSiswa || '', undefined, { numeric: true, sensitivity: 'base' }));
+      setSiswaList(sList);
+
+      // Load saved Bobot Nilai from Firestore
+      const bobotSnap = await getDoc(doc(db, 'bobot_nilai', 'main'));
+      if (bobotSnap.exists()) {
+        const bData = bobotSnap.data() as Partial<BobotNilai>;
+        const merged: BobotNilai = {
+          kehadiran: typeof bData.kehadiran === 'number' ? bData.kehadiran : DEFAULT_BOBOT.kehadiran,
+          tugasHarian: typeof bData.tugasHarian === 'number' ? bData.tugasHarian : DEFAULT_BOBOT.tugasHarian,
+          ulanganHarian: typeof bData.ulanganHarian === 'number' ? bData.ulanganHarian : DEFAULT_BOBOT.ulanganHarian,
+          pts: typeof bData.pts === 'number' ? bData.pts : DEFAULT_BOBOT.pts,
+          asas: typeof bData.asas === 'number' ? bData.asas : DEFAULT_BOBOT.asas,
+        };
+        setBobotNilai(merged);
+        try {
+          localStorage.setItem('sacil_bobot_nilai', JSON.stringify(merged));
+        } catch {}
+      }
     } catch (error) {
-      console.error("Error fetching data:", error);
+      if (!isQuotaError(error)) {
+        console.warn("Error fetching data:", error);
+      }
     }
   };
 
-  const filteredSiswa = kelas === '' ? [] : siswaList.filter(s => s.kelas === kelas);
-
-  const formattedJudulTugas = `${judulTugas || 'Tugas'} - ${new Date(date).toLocaleDateString('id-ID', { day: '2-digit', month: 'long', year: 'numeric' })}`;
+  const filteredSiswa = useMemo(() => {
+    if (kelas === '') return [];
+    return siswaList.filter(s => s.kelas === kelas);
+  }, [kelas, siswaList]);
 
   const handleSave = async () => {
     try {
@@ -228,11 +454,13 @@ export default function NilaiSiswa() {
             setTimeout(() => setNotification(null), 3000);
             return;
         }
+        const kategori = getTaskCategory(judulTugas);
         const nilaiDocRef = doc(db, 'nilai', `${judulTugas}_${kelas}`);
         await setDoc(nilaiDocRef, {
             judulTugas,
             kelas,
             date,
+            kategori,
             nilai
         });
         setAllTasksData(prev => ({
@@ -247,7 +475,7 @@ export default function NilaiSiswa() {
         setNotification({message: "Nilai Berhasil Disimpan!", type: 'success'});
         setTimeout(() => setNotification(null), 3000);
     } catch (error) {
-        console.error("Error saving data:", error);
+        console.warn("Error saving data:", error);
         setNotification({message: "Gagal menyimpan nilai.", type: 'error'});
         setTimeout(() => setNotification(null), 3000);
     }
@@ -289,6 +517,54 @@ export default function NilaiSiswa() {
     setIsEditingPreview(true);
   };
 
+  const computeNilaiRapor = (studentId: string, sourceData: Record<string, Record<string, string>> = allTasksData) => {
+    const kehadiranPct = attendancePctMap[studentId];
+    const kehadiranScore = kehadiranPct !== null && kehadiranPct !== undefined ? kehadiranPct : 0;
+
+    const categoryScores: Record<KategoriPenilaian, number[]> = {
+      'Tugas Harian': [],
+      'Ulangan Harian': [],
+      'PTS': [],
+      'ASAS': [],
+    };
+
+    Object.keys(sourceData).forEach((taskName) => {
+      const rawVal = sourceData[taskName]?.[studentId];
+      if (rawVal !== undefined && rawVal !== null && String(rawVal).trim() !== '' && String(rawVal).trim() !== '-') {
+        const num = Number(rawVal);
+        if (!isNaN(num)) {
+          const kat = getTaskCategory(taskName);
+          categoryScores[kat].push(num);
+        }
+      }
+    });
+
+    const avg = (arr: number[]) => arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+
+    const avgTH = avg(categoryScores['Tugas Harian']);
+    const avgUH = avg(categoryScores['Ulangan Harian']);
+    const avgPTS = avg(categoryScores['PTS']);
+    const avgASAS = avg(categoryScores['ASAS']);
+
+    const wTotal =
+      (Number(bobotNilai.kehadiran) || 0) +
+      (Number(bobotNilai.tugasHarian) || 0) +
+      (Number(bobotNilai.ulanganHarian) || 0) +
+      (Number(bobotNilai.pts) || 0) +
+      (Number(bobotNilai.asas) || 0);
+
+    if (wTotal <= 0) return 0;
+
+    const weighted =
+      kehadiranScore * (Number(bobotNilai.kehadiran) || 0) +
+      avgTH * (Number(bobotNilai.tugasHarian) || 0) +
+      avgUH * (Number(bobotNilai.ulanganHarian) || 0) +
+      avgPTS * (Number(bobotNilai.pts) || 0) +
+      avgASAS * (Number(bobotNilai.asas) || 0);
+
+    return weighted / wTotal;
+  };
+
   const handleSavePreviewChanges = async () => {
     try {
         const tasksToSave = getPreviewTasks();
@@ -303,6 +579,7 @@ export default function NilaiSiswa() {
                 judulTugas: tugas,
                 kelas,
                 date: existingDate,
+                kategori: getTaskCategory(tugas),
                 nilai: currentNilai
             });
 
@@ -316,33 +593,34 @@ export default function NilaiSiswa() {
         setNotification({message: "Perubahan nilai berhasil disimpan!", type: 'success'});
         setTimeout(() => setNotification(null), 3000);
     } catch (error) {
-        console.error("Error saving preview changes:", error);
+        console.warn("Error saving preview changes:", error);
         setNotification({message: "Gagal menyimpan perubahan nilai.", type: 'error'});
         setTimeout(() => setNotification(null), 3000);
     }
   };
 
   const handleExportExcel = () => {
-    // If a task is selected, use only that task (if graded), otherwise use the graded list
     const exportTasks = getPreviewTasks();
     
     const data = filteredSiswa.map((s, idx) => {
+        const pct = attendancePctMap[s.id];
         const row: any = {
             'No': idx + 1,
             'Nama Siswa': s.namaSiswa,
             'NIS': s.nisn,
             'Kelas': kelas,
+            [`Kehadiran (${bobotNilai.kehadiran}%)`]: pct !== null && pct !== undefined ? `${pct.toFixed(1)}%` : '-',
         };
         exportTasks.forEach(tugas => {
             const dateStr = allTasksDates[tugas] ? ` (${new Date(allTasksDates[tugas]).toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: '2-digit' })})` : '';
-            row[`${tugas}${dateStr}`] = allTasksData[tugas]?.[s.id] || '-';
+            row[`${tugas} [${getTaskCategory(tugas)}]${dateStr}`] = allTasksData[tugas]?.[s.id] || '-';
         });
+        row['Nilai Rapor'] = computeNilaiRapor(s.id).toFixed(1);
         return row;
     });
     const ws = XLSX.utils.json_to_sheet(data);
 
-    // Set column widths to fit content roughly
-    const colWidths = [{ wch: 5 }, { wch: 30 }, { wch: 15 }, { wch: 10 }, ...exportTasks.map(() => ({ wch: 10 }))];
+    const colWidths = [{ wch: 5 }, { wch: 30 }, { wch: 15 }, { wch: 10 }, { wch: 16 }, ...exportTasks.map(() => ({ wch: 14 })), { wch: 14 }];
     ws['!cols'] = colWidths;
 
     const wb = XLSX.utils.book_new();
@@ -351,40 +629,47 @@ export default function NilaiSiswa() {
   };
 
   const handleExportPDF = async () => {
-    // If a task is selected, use only that task (if graded), otherwise use the graded list
     const exportTasks = getPreviewTasks();
 
-    const headerRow1 = ['No', 'Nama Siswa', 'NIS', 'Kelas', ...exportTasks.map(tugas => tugas)];
-    const headerRow2 = ['', '', '', '', ...exportTasks.map(tugas => {
-        return allTasksDates[tugas] ? `(${new Date(allTasksDates[tugas]).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' })})` : '';
-    })];
+    const headerRow1 = ['No', 'Nama Siswa', 'NIS', 'Kelas', 'Kehadiran', ...exportTasks.map(tugas => tugas), 'Nilai Rapor'];
+    const headerRow2 = [
+      '', '', '', '', `(${bobotNilai.kehadiran}%)`,
+      ...exportTasks.map(tugas => {
+        const dateText = allTasksDates[tugas] ? new Date(allTasksDates[tugas]).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
+        return `${getTaskCategory(tugas)}${dateText ? ` (${dateText})` : ''}`;
+      }),
+      `(Bobot ${totalBobot}%)`
+    ];
 
     const head = [headerRow1, headerRow2];
     
-    const data = filteredSiswa.map((s, idx) => [
-        String(idx + 1),
-        s.namaSiswa,
-        s.nisn,
-        kelas,
-        ...exportTasks.map(tugas => allTasksData[tugas]?.[s.id] || '-')
-    ]);
+    const data = filteredSiswa.map((s, idx) => {
+        const pct = attendancePctMap[s.id];
+        return [
+          String(idx + 1),
+          s.namaSiswa,
+          s.nisn,
+          kelas,
+          pct !== null && pct !== undefined ? `${pct.toFixed(1)}%` : '-',
+          ...exportTasks.map(tugas => allTasksData[tugas]?.[s.id] || '-'),
+          computeNilaiRapor(s.id).toFixed(1)
+        ];
+    });
     
     const profileDoc = await getDoc(doc(db, 'user_profile', 'main'));
     const profileData = profileDoc.exists() ? profileDoc.data() : {};
     
-    // Calculate column styles to make Nilai columns narrow
     const columnStyles: any = {};
     headerRow1.forEach((_, idx) => {
         if (idx > 3) {
-            columnStyles[idx] = { halign: 'center', cellWidth: 20 }; // Narrow for Nilai
+            columnStyles[idx] = { halign: 'center', cellWidth: 20 };
         } else {
             columnStyles[idx] = { halign: 'left' };
         }
     });
-    // Override specific columns
-    columnStyles[0] = { halign: 'center', cellWidth: 10 }; // No.
-    columnStyles[2] = { halign: 'center', cellWidth: 20 }; // NIS
-    columnStyles[3] = { halign: 'center', cellWidth: 15 }; // Kelas
+    columnStyles[0] = { halign: 'center', cellWidth: 10 };
+    columnStyles[2] = { halign: 'center', cellWidth: 20 };
+    columnStyles[3] = { halign: 'center', cellWidth: 15 };
     
     await generatePDF(`Nilai_Siswa_${kelas || 'Semua'}${judulTugas ? `_${judulTugas}` : ''}`, head, data, { columnStyles }, {
         namaKepala: profileData.namaKepala,
@@ -467,206 +752,319 @@ export default function NilaiSiswa() {
                 exit={{ opacity: 0, x: 20 }}
                 transition={{ duration: 0.2 }}
             >
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-                    <div>
-                        <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Tanggal</label>
-                        <input 
-                        type="date" 
-                        value={date}
-                        onChange={(e) => setDate(e.target.value)}
-                        className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#F06C84]/20 focus:border-[#F06C84] transition-all bg-gray-50/50"
-                        />
-                    </div>
-                    <div className="relative">
-                        <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Kelas</label>
-                        <button
-                            type="button"
-                            onClick={() => setIsKelasOpen(!isKelasOpen)}
-                            className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#F06C84]/20 focus:border-[#F06C84] transition-all bg-gray-50/50 text-gray-800 font-medium flex items-center justify-between text-left cursor-pointer hover:bg-gray-100/40"
-                        >
-                            <span className={kelas ? 'text-gray-800 font-semibold' : 'text-gray-400'}>
-                                {kelas || '-- Pilih Kelas --'}
+                {/* Pengaturan Bobot Nilai */}
+                <div className="mb-6 p-5 rounded-2xl bg-gradient-to-br from-rose-50/60 via-white to-slate-50 border border-rose-100/80 shadow-xs">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 pb-3 border-b border-rose-100/60">
+                        <div className="flex items-center gap-2.5">
+                            <div className="p-2 bg-[#F06C84]/10 text-[#F06C84] rounded-xl">
+                                <Sliders className="w-4 h-4" />
+                            </div>
+                            <div>
+                                <h3 className="text-sm font-bold text-gray-900">Bobot Nilai Rapor (%)</h3>
+                                <p className="text-[11px] text-gray-500 font-medium">Atur persentase bobot penilaian untuk kalkulasi otomatis Nilai Rapor</p>
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                            <span className={`px-3 py-1 rounded-lg text-xs font-bold border ${
+                                totalBobot === 100 
+                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200' 
+                                    : 'bg-amber-50 text-amber-700 border-amber-200'
+                            }`}>
+                                Total: {totalBobot}% {totalBobot !== 100 && '(Harus 100%)'}
                             </span>
-                            <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform duration-200 ${isKelasOpen ? 'rotate-180' : ''}`} />
-                        </button>
-
-                        <AnimatePresence>
-                            {isKelasOpen && (
-                                <>
-                                    <div className="fixed inset-0 z-40" onClick={() => setIsKelasOpen(false)} />
-                                    <motion.div
-                                        initial={{ opacity: 0, y: -8, scale: 0.98 }}
-                                        animate={{ opacity: 1, y: 0, scale: 1 }}
-                                        exit={{ opacity: 0, y: -8, scale: 0.98 }}
-                                        transition={{ duration: 0.15 }}
-                                        className="absolute left-0 right-0 z-50 mt-1.5 bg-white rounded-xl shadow-xl border border-gray-150 py-1.5 max-h-60 overflow-y-auto"
-                                    >
-                                        <button
-                                            type="button"
-                                            onClick={() => { setKelas(""); setIsKelasOpen(false); }}
-                                            className={`w-full px-4 py-2.5 text-left text-sm font-medium transition-colors flex items-center justify-between cursor-pointer ${
-                                                kelas === "" ? 'bg-rose-50/70 text-[#F06C84] font-semibold' : 'text-gray-600 hover:bg-gray-50'
-                                            }`}
-                                        >
-                                            <span>-- Pilih Kelas --</span>
-                                            {kelas === "" && <Check className="w-4 h-4 text-[#F06C84]" />}
-                                        </button>
-                                        {kelasList.map((k) => {
-                                            const isSelected = kelas === k.namaKelas;
-                                            return (
-                                                <button
-                                                    key={k.id}
-                                                    type="button"
-                                                    onClick={() => { setKelas(k.namaKelas); setIsKelasOpen(false); }}
-                                                    className={`w-full px-4 py-2.5 text-left text-sm font-medium transition-colors flex items-center justify-between cursor-pointer ${
-                                                        isSelected ? 'bg-rose-50/70 text-[#F06C84] font-semibold' : 'text-gray-600 hover:bg-gray-50'
-                                                    }`}
-                                                >
-                                                    <span>{k.namaKelas}</span>
-                                                    {isSelected && <Check className="w-4 h-4 text-[#F06C84]" />}
-                                                </button>
-                                            );
-                                        })}
-                                    </motion.div>
-                                </>
-                            )}
-                        </AnimatePresence>
-                    </div>
-                    <div>
-                        <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Input Judul Tugas Baru</label>
-                        <div className="flex gap-2">
-                            <input 
-                                type="text" 
-                                value={tempNewTaskTitle}
-                                onChange={(e) => setTempNewTaskTitle(e.target.value)}
-                                placeholder="Masukkan judul tugas"
-                                className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#F06C84]/20 focus:border-[#F06C84] transition-all bg-gray-50/50"
-                            />
-                             <button
-                                onClick={async () => {
-                                    if (tempNewTaskTitle && !tugasList.includes(tempNewTaskTitle)) {
-                                        try {
-                                            const taskRef = doc(db, 'daftar_tugas', tempNewTaskTitle);
-                                            await setDoc(taskRef, {
-                                                judulTugas: tempNewTaskTitle,
-                                                createdAt: new Date().toISOString()
-                                            });
-                                            setTugasList([...tugasList, tempNewTaskTitle]);
-                                            setJudulTugas(tempNewTaskTitle);
-                                            setTempNewTaskTitle('');
-                                            setNotification({message: "Tugas Baru Berhasil Ditambahkan ke Cloud", type: 'success'});
-                                            setTimeout(() => setNotification(null), 3000);
-                                        } catch (e) {
-                                            console.error("Error saving new task to cloud:", e);
-                                            setNotification({message: "Gagal menyimpan tugas baru ke Cloud.", type: 'error'});
-                                            setTimeout(() => setNotification(null), 3000);
-                                        }
-                                    } else if (!tempNewTaskTitle) {
-                                        setNotification({message: "Mohon isi judul tugas.", type: 'error'});
-                                        setTimeout(() => setNotification(null), 3000);
-                                    } else {
-                                        setNotification({message: "Tugas sudah ada.", type: 'error'});
-                                        setTimeout(() => setNotification(null), 3000);
-                                    }
-                                }}
-                                className="px-4 py-3 bg-[#F06C84] hover:bg-[#d85e75] text-white rounded-xl font-semibold transition-all cursor-pointer"
+                            <button
+                                type="button"
+                                onClick={handleResetBobot}
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-white border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors cursor-pointer"
+                                title="Kembalikan ke bobot default"
                             >
-                                Simpan
+                                <RotateCcw className="w-3.5 h-3.5" /> Default
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleSaveBobot}
+                                disabled={isSavingBobot}
+                                className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl text-xs font-bold bg-[#F06C84] hover:bg-[#d85e75] text-white shadow-sm transition-all cursor-pointer disabled:opacity-60"
+                            >
+                                <Save className="w-3.5 h-3.5" /> {isSavingBobot ? 'Menyimpan...' : 'Simpan Bobot'}
                             </button>
                         </div>
                     </div>
-                    <div>
-                        <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Pilih Tugas</label>
-                        <div className="flex gap-2">
-                            <div className="relative flex-1">
+
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+                        {[
+                            { key: 'kehadiran' as keyof BobotNilai, label: 'Kehadiran' },
+                            { key: 'tugasHarian' as keyof BobotNilai, label: 'Tugas Harian' },
+                            { key: 'ulanganHarian' as keyof BobotNilai, label: 'Ulangan Harian' },
+                            { key: 'pts' as keyof BobotNilai, label: 'PTS' },
+                            { key: 'asas' as keyof BobotNilai, label: 'ASAS' },
+                        ].map((item) => (
+                            <div key={item.key} className="bg-white p-3 rounded-xl border border-gray-150 shadow-2xs">
+                                <label className="block text-[11px] font-bold text-gray-600 uppercase tracking-wider mb-1.5">
+                                    {item.label}
+                                </label>
+                                <div className="relative flex items-center">
+                                    <input
+                                        type="number"
+                                        min="0"
+                                        max="100"
+                                        value={bobotNilai[item.key]}
+                                        onChange={(e) => {
+                                            const val = Math.max(0, Math.min(100, Number(e.target.value) || 0));
+                                            setBobotNilai(prev => ({ ...prev, [item.key]: val }));
+                                        }}
+                                        className="w-full pl-3 pr-8 py-2 rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#F06C84]/20 focus:border-[#F06C84] bg-gray-50/50 text-sm font-bold text-gray-900"
+                                    />
+                                    <span className="absolute right-3 text-xs font-bold text-gray-400 pointer-events-none">%</span>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+
+                <div className="space-y-4 mb-6">
+                    {/* Baris 1: Tanggal & Kelas */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="min-w-0">
+                            <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Tanggal</label>
+                            <input 
+                                type="date" 
+                                value={date}
+                                onChange={(e) => setDate(e.target.value)}
+                                className="w-full h-[46px] px-4 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#F06C84]/20 focus:border-[#F06C84] transition-all bg-gray-50/50 text-sm font-medium text-gray-800"
+                            />
+                        </div>
+                        <div className="relative min-w-0">
+                            <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Kelas</label>
+                            <button
+                                type="button"
+                                onClick={() => setIsKelasOpen(!isKelasOpen)}
+                                className="w-full h-[46px] px-4 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#F06C84]/20 focus:border-[#F06C84] transition-all bg-gray-50/50 text-sm text-gray-800 font-medium flex items-center justify-between text-left cursor-pointer hover:bg-gray-100/40"
+                            >
+                                <span className={`truncate ${kelas ? 'text-gray-800 font-semibold' : 'text-gray-400'}`}>
+                                    {kelas || '-- Pilih Kelas --'}
+                                </span>
+                                <ChevronDown className={`w-4 h-4 text-gray-400 shrink-0 transition-transform duration-200 ${isKelasOpen ? 'rotate-180' : ''}`} />
+                            </button>
+
+                            <AnimatePresence>
+                                {isKelasOpen && (
+                                    <>
+                                        <div className="fixed inset-0 z-40" onClick={() => setIsKelasOpen(false)} />
+                                        <motion.div
+                                            initial={{ opacity: 0, y: -8, scale: 0.98 }}
+                                            animate={{ opacity: 1, y: 0, scale: 1 }}
+                                            exit={{ opacity: 0, y: -8, scale: 0.98 }}
+                                            transition={{ duration: 0.15 }}
+                                            className="absolute left-0 right-0 z-50 mt-1.5 bg-white rounded-xl shadow-xl border border-gray-150 py-1.5 max-h-60 overflow-y-auto"
+                                        >
+                                            <button
+                                                type="button"
+                                                onClick={() => { setKelas(""); setIsKelasOpen(false); }}
+                                                className={`w-full px-4 py-2.5 text-left text-sm font-medium transition-colors flex items-center justify-between cursor-pointer ${
+                                                    kelas === "" ? 'bg-rose-50/70 text-[#F06C84] font-semibold' : 'text-gray-600 hover:bg-gray-50'
+                                                }`}
+                                            >
+                                                <span>-- Pilih Kelas --</span>
+                                                {kelas === "" && <Check className="w-4 h-4 text-[#F06C84]" />}
+                                            </button>
+                                            {kelasList.map((k) => {
+                                                const isSelected = kelas === k.namaKelas;
+                                                return (
+                                                    <button
+                                                        key={k.id}
+                                                        type="button"
+                                                        onClick={() => { setKelas(k.namaKelas); setIsKelasOpen(false); }}
+                                                        className={`w-full px-4 py-2.5 text-left text-sm font-medium transition-colors flex items-center justify-between cursor-pointer ${
+                                                            isSelected ? 'bg-rose-50/70 text-[#F06C84] font-semibold' : 'text-gray-600 hover:bg-gray-50'
+                                                        }`}
+                                                    >
+                                                        <span>{k.namaKelas}</span>
+                                                        {isSelected && <Check className="w-4 h-4 text-[#F06C84]" />}
+                                                    </button>
+                                                );
+                                            })}
+                                        </motion.div>
+                                    </>
+                                )}
+                            </AnimatePresence>
+                        </div>
+                    </div>
+
+                    {/* Baris 2: Input Judul Tugas Baru & Pilih Tugas (Simetris & Sejajar) */}
+                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start">
+                        <div className="min-w-0">
+                            <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Input Judul Tugas / Penilaian Baru</label>
+                            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full">
+                                <input 
+                                    type="text" 
+                                    value={tempNewTaskTitle}
+                                    onChange={(e) => {
+                                        const val = e.target.value;
+                                        setTempNewTaskTitle(val);
+                                        if (val.trim()) {
+                                            setTempNewTaskKategori(inferKategoriFromTitle(val));
+                                        }
+                                    }}
+                                    placeholder="Contoh: Tugas 1, UH 1, PTS, ASAS"
+                                    className="min-w-0 flex-1 h-[46px] px-4 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#F06C84]/20 focus:border-[#F06C84] transition-all bg-gray-50/50 text-sm"
+                                />
+                                <select
+                                    value={tempNewTaskKategori}
+                                    onChange={(e) => setTempNewTaskKategori(e.target.value as KategoriPenilaian)}
+                                    className="h-[46px] px-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#F06C84]/20 focus:border-[#F06C84] bg-gray-50/50 text-xs font-bold text-gray-700 shrink-0 sm:w-36"
+                                >
+                                    {KATEGORI_OPTIONS.map(kat => (
+                                        <option key={kat} value={kat}>{kat}</option>
+                                    ))}
+                                </select>
                                 <button
                                     type="button"
-                                    onClick={() => setIsJudulTugasOpen(!isJudulTugasOpen)}
-                                    className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#F06C84]/20 focus:border-[#F06C84] transition-all bg-gray-50/50 text-gray-800 font-medium flex items-center justify-between text-left cursor-pointer hover:bg-gray-100/40"
+                                    onClick={async () => {
+                                        if (tempNewTaskTitle && !tugasList.includes(tempNewTaskTitle)) {
+                                            try {
+                                                const taskRef = doc(db, 'daftar_tugas', tempNewTaskTitle);
+                                                await setDoc(taskRef, {
+                                                    judulTugas: tempNewTaskTitle,
+                                                    kategori: tempNewTaskKategori,
+                                                    createdAt: new Date().toISOString()
+                                                });
+                                                setTugasList([...tugasList, tempNewTaskTitle]);
+                                                setTaskCategories(prev => ({ ...prev, [tempNewTaskTitle]: tempNewTaskKategori }));
+                                                setJudulTugas(tempNewTaskTitle);
+                                                setTempNewTaskTitle('');
+                                                setNotification({message: "Tugas Baru Berhasil Ditambahkan ke Cloud", type: 'success'});
+                                                setTimeout(() => setNotification(null), 3000);
+                                            } catch (e) {
+                                                console.warn("Error saving new task to cloud:", e);
+                                                setNotification({message: "Gagal menyimpan tugas baru ke Cloud.", type: 'error'});
+                                                setTimeout(() => setNotification(null), 3000);
+                                            }
+                                        } else if (!tempNewTaskTitle) {
+                                            setNotification({message: "Mohon isi judul tugas.", type: 'error'});
+                                            setTimeout(() => setNotification(null), 3000);
+                                        } else {
+                                            setNotification({message: "Tugas sudah ada.", type: 'error'});
+                                            setTimeout(() => setNotification(null), 3000);
+                                        }
+                                    }}
+                                    className="h-[46px] px-5 bg-[#F06C84] hover:bg-[#d85e75] text-white rounded-xl font-semibold text-sm transition-all cursor-pointer shrink-0 flex items-center justify-center"
                                 >
-                                    <span className={judulTugas ? 'text-gray-800 font-semibold' : 'text-gray-400'}>
-                                        {judulTugas || '-- Pilih Tugas --'}
-                                    </span>
-                                    <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform duration-200 ${isJudulTugasOpen ? 'rotate-180' : ''}`} />
+                                    Simpan
                                 </button>
-
-                                <AnimatePresence>
-                                    {isJudulTugasOpen && (
-                                        <>
-                                            <div className="fixed inset-0 z-40" onClick={() => setIsJudulTugasOpen(false)} />
-                                            <motion.div
-                                                initial={{ opacity: 0, y: -8, scale: 0.98 }}
-                                                animate={{ opacity: 1, y: 0, scale: 1 }}
-                                                exit={{ opacity: 0, y: -8, scale: 0.98 }}
-                                                transition={{ duration: 0.15 }}
-                                                className="absolute left-0 right-0 z-50 mt-1.5 bg-white rounded-xl shadow-xl border border-gray-150 py-1.5 max-h-60 overflow-y-auto"
-                                            >
-                                                <button
-                                                    type="button"
-                                                    onClick={() => {
-                                                        setJudulTugas("");
-                                                        setIsSaved(false);
-                                                        setIsJudulTugasOpen(false);
-                                                    }}
-                                                    className={`w-full px-4 py-2.5 text-left text-sm font-medium transition-colors flex items-center justify-between cursor-pointer ${
-                                                        judulTugas === "" ? 'bg-rose-50/70 text-[#F06C84] font-semibold' : 'text-gray-600 hover:bg-gray-50'
-                                                    }`}
-                                                >
-                                                    <span>-- Pilih Tugas --</span>
-                                                    {judulTugas === "" && <Check className="w-4 h-4 text-[#F06C84]" />}
-                                                </button>
-                                                {tugasList.map((t) => {
-                                                    const isSelected = judulTugas === t;
-                                                    return (
-                                                        <button
-                                                            key={t}
-                                                            type="button"
-                                                            onClick={() => {
-                                                                if (allTasksData[t]) {
-                                                                    setNotification({message: "Judul tugas tersebut sudah digunakan di kelas ini.", type: 'error'});
-                                                                    setTimeout(() => setNotification(null), 3000);
-                                                                }
-                                                                setJudulTugas(t);
-                                                                setIsSaved(false);
-                                                                setIsJudulTugasOpen(false);
-                                                            }}
-                                                            className={`w-full px-4 py-2.5 text-left text-sm font-medium transition-colors flex items-center justify-between cursor-pointer ${
-                                                                isSelected ? 'bg-rose-50/70 text-[#F06C84] font-semibold' : 'text-gray-600 hover:bg-gray-50'
-                                                            }`}
-                                                        >
-                                                            <span>{t}</span>
-                                                            {isSelected && <Check className="w-4 h-4 text-[#F06C84]" />}
-                                                        </button>
-                                                    );
-                                                })}
-                                            </motion.div>
-                                        </>
-                                    )}
-                                </AnimatePresence>
                             </div>
-                            {judulTugas && (
-                                <div className="flex gap-2">
-                                    <button 
+                        </div>
+
+                        <div className="min-w-0">
+                            <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Pilih Tugas & Kategori</label>
+                            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full">
+                                <div className="relative min-w-0 flex-1">
+                                    <button
                                         type="button"
-                                        onClick={() => {
-                                            setEditedTaskTitle(judulTugas);
-                                            setIsEditingTask(true);
-                                        }}
-                                        className="px-3 py-2 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-xl transition-all"
-                                        title="Edit Nama Tugas"
+                                        onClick={() => setIsJudulTugasOpen(!isJudulTugasOpen)}
+                                        className="w-full h-[46px] px-4 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#F06C84]/20 focus:border-[#F06C84] transition-all bg-gray-50/50 text-sm text-gray-800 font-medium flex items-center justify-between text-left cursor-pointer hover:bg-gray-100/40"
                                     >
-                                        <Edit2 className="w-5 h-5" />
+                                        <span className={`truncate ${judulTugas ? 'text-gray-800 font-semibold' : 'text-gray-400'}`}>
+                                            {judulTugas || '-- Pilih Tugas --'}
+                                        </span>
+                                        <ChevronDown className={`w-4 h-4 text-gray-400 shrink-0 ml-2 transition-transform duration-200 ${isJudulTugasOpen ? 'rotate-180' : ''}`} />
                                     </button>
-                                    <button 
-                                        type="button"
-                                        onClick={() => setIsDeleteConfirmOpen(true)}
-                                        className="px-3 py-2 bg-rose-50 text-rose-600 hover:bg-rose-100 rounded-xl transition-all"
-                                        title="Hapus Tugas"
-                                    >
-                                        <Trash2 className="w-5 h-5" />
-                                    </button>
+
+                                    <AnimatePresence>
+                                        {isJudulTugasOpen && (
+                                            <>
+                                                <div className="fixed inset-0 z-40" onClick={() => setIsJudulTugasOpen(false)} />
+                                                <motion.div
+                                                    initial={{ opacity: 0, y: -8, scale: 0.98 }}
+                                                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                                                    exit={{ opacity: 0, y: -8, scale: 0.98 }}
+                                                    transition={{ duration: 0.15 }}
+                                                    className="absolute left-0 right-0 z-50 mt-1.5 bg-white rounded-xl shadow-xl border border-gray-150 py-1.5 max-h-60 overflow-y-auto"
+                                                >
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            setJudulTugas("");
+                                                            setIsSaved(false);
+                                                            setIsJudulTugasOpen(false);
+                                                        }}
+                                                        className={`w-full px-4 py-2.5 text-left text-sm font-medium transition-colors flex items-center justify-between cursor-pointer ${
+                                                            judulTugas === "" ? 'bg-rose-50/70 text-[#F06C84] font-semibold' : 'text-gray-600 hover:bg-gray-50'
+                                                        }`}
+                                                    >
+                                                        <span>-- Pilih Tugas --</span>
+                                                        {judulTugas === "" && <Check className="w-4 h-4 text-[#F06C84]" />}
+                                                    </button>
+                                                    {tugasList.map((t) => {
+                                                        const isSelected = judulTugas === t;
+                                                        const kat = getTaskCategory(t);
+                                                        return (
+                                                            <button
+                                                                key={t}
+                                                                type="button"
+                                                                onClick={() => {
+                                                                    if (allTasksData[t]) {
+                                                                        setNotification({message: "Judul tugas tersebut sudah digunakan di kelas ini.", type: 'error'});
+                                                                        setTimeout(() => setNotification(null), 3000);
+                                                                    }
+                                                                    setJudulTugas(t);
+                                                                    setIsSaved(false);
+                                                                    setIsJudulTugasOpen(false);
+                                                                }}
+                                                                className={`w-full px-4 py-2.5 text-left text-sm font-medium transition-colors flex items-center justify-between gap-2 cursor-pointer ${
+                                                                    isSelected ? 'bg-rose-50/70 text-[#F06C84] font-semibold' : 'text-gray-600 hover:bg-gray-50'
+                                                                }`}
+                                                            >
+                                                                <span className="truncate">{t}</span>
+                                                                <div className="flex items-center gap-1.5 shrink-0">
+                                                                    <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold border ${KATEGORI_BADGE_COLORS[kat]}`}>
+                                                                        {kat}
+                                                                    </span>
+                                                                    {isSelected && <Check className="w-4 h-4 text-[#F06C84]" />}
+                                                                </div>
+                                                            </button>
+                                                        );
+                                                    })}
+                                                </motion.div>
+                                            </>
+                                        )}
+                                    </AnimatePresence>
                                 </div>
-                            )}
+                                {judulTugas && (
+                                    <div className="flex items-center gap-2 shrink-0">
+                                        <select
+                                            value={getTaskCategory(judulTugas)}
+                                            onChange={(e) => handleChangeSelectedTaskKategori(e.target.value as KategoriPenilaian)}
+                                            className="h-[46px] px-3 rounded-xl border border-gray-200 bg-gray-50/50 text-xs font-bold text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#F06C84]/20 focus:border-[#F06C84] flex-1 sm:flex-none sm:w-36"
+                                            title="Kategori Penilaian Tugas"
+                                        >
+                                            {KATEGORI_OPTIONS.map(kat => (
+                                                <option key={kat} value={kat}>{kat}</option>
+                                            ))}
+                                        </select>
+                                        <button 
+                                            type="button"
+                                            onClick={() => {
+                                                setEditedTaskTitle(judulTugas);
+                                                setEditedTaskKategori(getTaskCategory(judulTugas));
+                                                setIsEditingTask(true);
+                                            }}
+                                            className="h-[46px] w-[46px] flex items-center justify-center bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-xl transition-all shrink-0 cursor-pointer"
+                                            title="Edit Nama & Kategori Tugas"
+                                        >
+                                            <Edit2 className="w-4 h-4" />
+                                        </button>
+                                        <button 
+                                            type="button"
+                                            onClick={() => setIsDeleteConfirmOpen(true)}
+                                            className="h-[46px] w-[46px] flex items-center justify-center bg-rose-50 text-rose-600 hover:bg-rose-100 rounded-xl transition-all shrink-0 cursor-pointer"
+                                            title="Hapus Tugas"
+                                        >
+                                            <Trash2 className="w-4 h-4" />
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -898,78 +1296,124 @@ export default function NilaiSiswa() {
                          </div>
                      </div>
                  </div>
+                 {/* Active Bobot Info Bar */}
+                 {kelas && (
+                     <div className="mb-4 px-4 py-3 rounded-xl bg-slate-50 border border-gray-100 flex flex-wrap items-center justify-between gap-2 text-xs">
+                         <div className="flex items-center gap-2 font-semibold text-gray-700">
+                             <Award className="w-4 h-4 text-[#F06C84] shrink-0" />
+                             <span>Bobot Nilai Rapor:</span>
+                             <span className="text-gray-600">
+                                 Kehadiran <strong>{bobotNilai.kehadiran}%</strong> • Tugas Harian <strong>{bobotNilai.tugasHarian}%</strong> • Ulangan Harian <strong>{bobotNilai.ulanganHarian}%</strong> • PTS <strong>{bobotNilai.pts}%</strong> • ASAS <strong>{bobotNilai.asas}%</strong>
+                             </span>
+                         </div>
+                         <span className="px-2.5 py-0.5 rounded-full bg-white border border-gray-200 text-gray-600 font-bold text-[11px]">
+                             Hari Efektif Presensi: {jumlahHariEfektif} Pertemuan
+                         </span>
+                     </div>
+                 )}
+
                  <div className="overflow-auto border border-gray-100 rounded-xl bg-white">
                      <table className="w-full text-left text-sm text-gray-500 border-collapse">
                          <thead className="text-xs text-gray-700 uppercase bg-gray-50">
                              <tr>
-                                 <th className="px-4 py-3 text-center" style={{ minWidth: '100px' }}>No</th>
-                                 <th className="px-4 py-3">Nama Lengkap</th>
-                                 <th className="px-4 py-3">NIS</th>
-                                 {getPreviewTasks().map(tugas => (
-                                     <th key={tugas} className="px-4 py-3 text-center" style={{ minWidth: '150px' }}>
-                                         <div>{tugas}</div>
-                                         <div className="text-[10px] text-gray-400 font-normal">
-                                             {allTasksDates[tugas] ? new Date(allTasksDates[tugas]).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }) : '-'}
-                                         </div>
-                                     </th>
-                                 ))}
+                                 <th className="px-4 py-3 text-center" style={{ minWidth: '70px' }}>No</th>
+                                 <th className="px-4 py-3" style={{ minWidth: '180px' }}>Nama Lengkap</th>
+                                 <th className="px-4 py-3" style={{ minWidth: '120px' }}>NIS</th>
+                                 <th className="px-4 py-3 text-center bg-blue-50/50 text-blue-900" style={{ minWidth: '130px' }}>
+                                     <div>Nilai Kehadiran</div>
+                                     <div className="text-[10px] text-blue-600 font-semibold normal-case mt-0.5">
+                                         Presensi ({bobotNilai.kehadiran}%)
+                                     </div>
+                                 </th>
+                                 {getPreviewTasks().map(tugas => {
+                                     const kat = getTaskCategory(tugas);
+                                     return (
+                                         <th key={tugas} className="px-4 py-3 text-center" style={{ minWidth: '150px' }}>
+                                             <div>{tugas}</div>
+                                             <div className="mt-0.5 flex flex-col items-center gap-0.5">
+                                                 <span className={`px-2 py-0.5 rounded text-[9px] font-bold border normal-case ${KATEGORI_BADGE_COLORS[kat]}`}>
+                                                     {kat}
+                                                 </span>
+                                                 <span className="text-[10px] text-gray-400 font-normal normal-case">
+                                                     {allTasksDates[tugas] ? new Date(allTasksDates[tugas]).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }) : '-'}
+                                                 </span>
+                                             </div>
+                                         </th>
+                                     );
+                                 })}
+                                 <th className="px-4 py-3 text-center bg-rose-50/70 text-[#F06C84]" style={{ minWidth: '130px' }}>
+                                     <div>Nilai Rapor</div>
+                                     <div className="text-[10px] text-[#F06C84]/80 font-semibold normal-case mt-0.5">
+                                         Bobot ({totalBobot}%)
+                                     </div>
+                                 </th>
                              </tr>
                          </thead>
                          <tbody>
                              {!kelas ? (
                                  <tr>
-                                     <td colSpan={3 + getPreviewTasks().length} className="px-4 py-12 text-center text-gray-400 font-medium bg-white">
+                                     <td colSpan={5 + getPreviewTasks().length} className="px-4 py-12 text-center text-gray-400 font-medium bg-white">
                                          Silakan pilih kelas terlebih dahulu untuk melihat daftar nilai.
                                      </td>
                                  </tr>
                              ) : filteredSiswa.length === 0 ? (
                                  <tr>
-                                     <td colSpan={3 + getPreviewTasks().length} className="px-4 py-12 text-center text-gray-400 font-medium bg-white">
+                                     <td colSpan={5 + getPreviewTasks().length} className="px-4 py-12 text-center text-gray-400 font-medium bg-white">
                                          Tidak ada data siswa untuk kelas ini.
                                      </td>
                                  </tr>
                              ) : (
-                                 filteredSiswa.map((s, idx) => (
-                                     <tr key={s.id} className="bg-white border-b border-gray-50">
-                                         <td className="px-4 py-3 font-mono text-center">{idx + 1}</td>
-                                         <td className="px-4 py-3 font-medium text-gray-900">{s.namaSiswa}</td>
-                                         <td className="px-4 py-3">{s.nisn}</td>
-                                         {getPreviewTasks().map(tugas => {
-                                             if (isEditingPreview) {
-                                                 const currentVal = previewNilaiEditState[tugas]?.[s.id] || '';
+                                 filteredSiswa.map((s, idx) => {
+                                     const pct = attendancePctMap[s.id];
+                                     const raporScore = computeNilaiRapor(s.id, isEditingPreview ? previewNilaiEditState : allTasksData);
+                                     return (
+                                         <tr key={s.id} className="bg-white border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
+                                             <td className="px-4 py-3 font-mono text-center">{idx + 1}</td>
+                                             <td className="px-4 py-3 font-medium text-gray-900">{s.namaSiswa}</td>
+                                             <td className="px-4 py-3">{s.nisn}</td>
+                                             <td className="px-4 py-3 text-center font-bold text-blue-700 bg-blue-50/20">
+                                                 {pct !== null && pct !== undefined ? `${pct.toFixed(1)}%` : '-'}
+                                             </td>
+                                             {getPreviewTasks().map(tugas => {
+                                                 if (isEditingPreview) {
+                                                     const currentVal = previewNilaiEditState[tugas]?.[s.id] || '';
+                                                     return (
+                                                         <td key={tugas} className="px-4 py-2 text-center">
+                                                             <input 
+                                                                 type="number"
+                                                                 min="0"
+                                                                 max="100"
+                                                                 value={currentVal}
+                                                                 onChange={(e) => {
+                                                                     const newVal = e.target.value;
+                                                                     setPreviewNilaiEditState(prev => ({
+                                                                         ...prev,
+                                                                         [tugas]: {
+                                                                             ...(prev[tugas] || {}),
+                                                                             [s.id]: newVal
+                                                                         }
+                                                                     }));
+                                                                 }}
+                                                                 className="w-20 px-2 py-1.5 text-center border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#F06C84]/20 focus:border-[#F06C84] bg-white text-sm font-semibold text-gray-800"
+                                                                 placeholder="-"
+                                                             />
+                                                         </td>
+                                                     );
+                                                 }
                                                  return (
-                                                     <td key={tugas} className="px-4 py-2 text-center">
-                                                         <input 
-                                                             type="number"
-                                                             min="0"
-                                                             max="100"
-                                                             value={currentVal}
-                                                             onChange={(e) => {
-                                                                 const newVal = e.target.value;
-                                                                 setPreviewNilaiEditState(prev => ({
-                                                                     ...prev,
-                                                                     [tugas]: {
-                                                                         ...(prev[tugas] || {}),
-                                                                         [s.id]: newVal
-                                                                     }
-                                                                 }));
-                                                             }}
-                                                             className="w-20 px-2 py-1.5 text-center border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#F06C84]/20 focus:border-[#F06C84] bg-white text-sm font-semibold text-gray-800"
-                                                             placeholder="-"
-                                                         />
-                                                     </td>
+                                                     <td key={tugas} className="px-4 py-3 text-center break-words">{allTasksData[tugas]?.[s.id] || '-'}</td>
                                                  );
-                                             }
-                                             return (
-                                                 <td key={tugas} className="px-4 py-3 text-center break-words">{allTasksData[tugas]?.[s.id] || '-'}</td>
-                                             );
-                                         })}
-                                     </tr>
-                                 ))
+                                             })}
+                                             <td className="px-4 py-3 text-center font-black text-[#F06C84] bg-rose-50/30">
+                                                 {raporScore.toFixed(1)}
+                                             </td>
+                                         </tr>
+                                     );
+                                 })
                              )}
                          </tbody>
                      </table>
-                </div>
+                 </div>
             </motion.div>
         )}
         </AnimatePresence>
@@ -1001,7 +1445,7 @@ export default function NilaiSiswa() {
             >
               <div className="h-2 bg-[#F06C84] w-full"></div>
               <div className="p-6">
-                <h3 className="text-xl font-bold text-gray-900 mb-4">Edit Nama Tugas</h3>
+                <h3 className="text-xl font-bold text-gray-900 mb-4">Edit Nama & Kategori Tugas</h3>
                 <div className="space-y-4">
                   <div>
                     <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Nama Tugas</label>
@@ -1011,6 +1455,18 @@ export default function NilaiSiswa() {
                       onChange={(e) => setEditedTaskTitle(e.target.value)}
                       className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#F06C84]/20 focus:border-[#F06C84] transition-all bg-gray-50/50 text-sm font-medium"
                     />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Kategori Penilaian</label>
+                    <select
+                      value={editedTaskKategori}
+                      onChange={(e) => setEditedTaskKategori(e.target.value as KategoriPenilaian)}
+                      className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#F06C84]/20 focus:border-[#F06C84] transition-all bg-gray-50/50 text-sm font-medium"
+                    >
+                      {KATEGORI_OPTIONS.map(kat => (
+                        <option key={kat} value={kat}>{kat}</option>
+                      ))}
+                    </select>
                   </div>
                   <div className="flex justify-end gap-3 pt-2">
                     <button 
@@ -1022,7 +1478,7 @@ export default function NilaiSiswa() {
                     </button>
                     <button 
                       type="button"
-                      onClick={() => handleEditTask(editedTaskTitle)}
+                      onClick={() => handleEditTask(editedTaskTitle, editedTaskKategori)}
                       className="px-5 py-2.5 bg-[#F06C84] text-white text-sm font-semibold rounded-xl hover:bg-[#d85e75] shadow-sm shadow-[#F06C84]/30 transition-all"
                     >
                       Simpan

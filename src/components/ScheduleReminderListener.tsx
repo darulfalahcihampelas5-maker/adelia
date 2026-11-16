@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { db, collection, getDocs, query, orderBy } from '../lib/firebase';
+import { db, collection, getDocs, query, orderBy, isQuotaError } from '../lib/firebase';
 import { Bell, Clock, X, Volume2 } from 'lucide-react';
 import { triggerWebPushNotification } from '../lib/notifications';
 import { motion, AnimatePresence } from 'motion/react';
@@ -29,7 +29,9 @@ export default function ScheduleReminderListener() {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Jadwal));
       setJadwal(data);
     } catch (error) {
-      console.error("Error fetching schedules for listener:", error);
+      if (!isQuotaError(error)) {
+        console.warn("Error fetching schedules for listener:", error);
+      }
     }
   };
 

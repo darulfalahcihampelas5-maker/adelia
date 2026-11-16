@@ -8,7 +8,8 @@ import {
 } from 'lucide-react';
 import { 
   collection, getDocs, doc, getDoc, db, 
-  getUsage, QUOTA_READS, QUOTA_WRITES, clearCache 
+  getUsage, QUOTA_READS, QUOTA_WRITES, clearCache,
+  getUpgradeDatabaseUrl, isQuotaError
 } from '../lib/firebase';
 
 import { DigitalClock } from './DigitalClock';
@@ -90,8 +91,13 @@ export default function Dashboard({ onLogout }: { onLogout: () => void, key?: st
 
   useEffect(() => {
     const handleQuotaExceeded = () => setQuotaExceeded(true);
+    const handleQuotaRecovered = () => setQuotaExceeded(false);
     window.addEventListener('firebase-quota-exceeded', handleQuotaExceeded);
-    return () => window.removeEventListener('firebase-quota-exceeded', handleQuotaExceeded);
+    window.addEventListener('firebase-quota-recovered', handleQuotaRecovered);
+    return () => {
+      window.removeEventListener('firebase-quota-exceeded', handleQuotaExceeded);
+      window.removeEventListener('firebase-quota-recovered', handleQuotaRecovered);
+    };
   }, []);
 
   useEffect(() => {
@@ -114,7 +120,9 @@ export default function Dashboard({ onLogout }: { onLogout: () => void, key?: st
           setHeaderProfilePic(docSnap.data().profilePic || null);
         }
       } catch (e) {
-        console.error("Error fetching header profile:", e);
+        if (!isQuotaError(e)) {
+          console.warn("Error fetching header profile:", e);
+        }
       }
     };
     fetchHeaderProfile();
@@ -232,7 +240,7 @@ export default function Dashboard({ onLogout }: { onLogout: () => void, key?: st
   };
 
   useEffect(() => {
-    if (activeTab === 'Dashboard') {
+    if (activeTab === 'Rekapitulasi') {
       fetchAbsensiReport();
     }
   }, [activeTab]);
@@ -325,6 +333,7 @@ export default function Dashboard({ onLogout }: { onLogout: () => void, key?: st
   const handleForceSync = async () => {
     setIsSyncing(true);
     setSyncSuccess(false);
+    setQuotaExceeded(false);
     try {
       clearCache();
       await Promise.all([
@@ -483,13 +492,39 @@ export default function Dashboard({ onLogout }: { onLogout: () => void, key?: st
         </header>
 
         {quotaExceeded && (
-          <div className="bg-amber-500 text-white px-4 py-3 text-center text-sm font-medium flex items-center justify-center gap-2 shadow-md z-20">
+          <div className="bg-amber-500 text-white px-4 py-3 text-center text-sm font-medium flex flex-wrap items-center justify-center gap-2.5 shadow-md z-20">
             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
             </svg>
             <span>
-              Google Cloud Firestore Quota Exceeded (Limit Gratis Harian Tercapai). Data tidak dapat dimuat untuk sementara. Siklus kuota akan direset otomatis pada <strong>pukul 14:00 WIB</strong>.
+              Kuota gratis harian Firestore tercapai. Data tidak dapat dimuat sementara hingga reset harian dari Google Cloud atau upgrade database.
             </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={async () => {
+                  clearCache();
+                  setQuotaExceeded(false);
+                  try {
+                    const docSnap = await getDoc(doc(db, "user_profile", "main"));
+                    if (docSnap.exists()) {
+                      setHeaderProfilePic(docSnap.data().profilePic || null);
+                    }
+                  } catch {}
+                }}
+                className="font-bold bg-white text-amber-700 hover:bg-amber-50 px-3 py-1 rounded-md transition-colors cursor-pointer text-xs shadow-xs"
+              >
+                Coba Muat Ulang
+              </button>
+              <a
+                href={getUpgradeDatabaseUrl()}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline font-bold bg-white/20 hover:bg-white/30 px-2.5 py-1 rounded-md transition-colors text-xs"
+              >
+                Upgrade Database
+              </a>
+            </div>
           </div>
         )}
 

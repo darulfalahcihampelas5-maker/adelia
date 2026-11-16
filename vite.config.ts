@@ -21,7 +21,9 @@ export default defineConfig(() => {
         output: {
           manualChunks: {
             vendor: ['react', 'react-dom', 'motion'],
-            pdf: ['jspdf', 'html2canvas'],
+            pdf: ['jspdf', 'jspdf-autotable', 'html2pdf.js'],
+            excel: ['xlsx'],
+            firebase: ['firebase/app', 'firebase/firestore', 'firebase/auth'],
             lucide: ['lucide-react']
           }
         }
